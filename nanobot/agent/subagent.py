@@ -37,6 +37,7 @@ class SubagentManager:
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
+        max_iterations: int = 50,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.provider = provider
@@ -48,6 +49,7 @@ class SubagentManager:
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
+        self.max_iterations = max_iterations
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
     
     async def spawn(
@@ -123,7 +125,7 @@ class SubagentManager:
             ]
             
             # Run agent loop (limited iterations)
-            max_iterations = 15
+            max_iterations = self.max_iterations
             iteration = 0
             final_result: str | None = None
             

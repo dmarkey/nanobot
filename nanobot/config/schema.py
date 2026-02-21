@@ -187,6 +187,7 @@ class AgentDefaults(Base):
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 20
+    subagent_max_iterations: int = 50
     memory_window: int = 50
 
 
