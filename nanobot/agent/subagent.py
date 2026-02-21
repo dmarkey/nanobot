@@ -173,10 +173,16 @@ class SubagentManager:
                     break
             
             if final_result is None:
-                final_result = "Task completed but no final response was generated."
-            
-            logger.info("Subagent [{}] completed successfully", task_id)
-            await self._announce_result(task_id, label, task, final_result, origin, "ok")
+                final_result = (
+                    f"Task did NOT complete: the subagent ran out of iterations "
+                    f"(max {max_iterations}). The task may need to be broken into "
+                    f"smaller pieces, or the iteration limit needs to be increased."
+                )
+                logger.warning("Subagent [{}] exhausted max iterations ({})", task_id, max_iterations)
+                await self._announce_result(task_id, label, task, final_result, origin, "error")
+            else:
+                logger.info("Subagent [{}] completed successfully", task_id)
+                await self._announce_result(task_id, label, task, final_result, origin, "ok")
             
         except Exception as e:
             error_msg = f"Error: {str(e)}"
