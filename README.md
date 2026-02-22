@@ -856,6 +856,267 @@ Define named profiles to spawn specialized subagents with different tools, skill
 
 The main agent's `spawn` tool gains an optional `profile` parameter. Spawning without a profile uses the default tool set and the `subagentMaxIterations` setting. The `exec` tool is always gated by `tools.exec.enabled` — even if a profile requests it.
 
+### Custom Tools (Plugins)
+
+Drop a `.py` file in `{workspace}/tools/` to add custom tools. Each file is auto-discovered on startup — no config changes needed. Plugin tools are available to both the main agent and all subagents automatically.
+
+See [`examples/tools/`](examples/tools/) for ready-to-copy plugin files.
+
+<details>
+<summary><b>Quick Start</b></summary>
+
+**1. Create the tools directory:**
+
+```bash
+mkdir -p ~/.nanobot/workspace/tools
+```
+
+**2. Add a plugin file** (e.g. `~/.nanobot/workspace/tools/greet.py`):
+
+```python
+from nanobot.agent.tools import Tool, ToolContext
+
+class GreetTool(Tool):
+    def __init__(self, context: ToolContext):
+        self._workspace = context.workspace
+
+    @property
+    def name(self): return "greet"
+
+    @property
+    def description(self): return "Greet someone by name"
+
+    @property
+    def parameters(self):
+        return {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Who to greet"},
+            },
+            "required": ["name"],
+        }
+
+    async def execute(self, name: str, **kwargs) -> str:
+        return f"Hello, {name}!"
+```
+
+**3. Restart nanobot** — the tool is now available. No config changes needed.
+
+</details>
+
+<details>
+<summary><b>Plugin API Reference</b></summary>
+
+Every plugin is a Python class that extends `Tool` (from `nanobot.agent.tools`). You must implement four members:
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `name` | `property → str` | Unique tool name used in LLM function calls (e.g. `"greet"`). Must not collide with built-in tools. |
+| `description` | `property → str` | One-line description shown to the LLM so it knows when to use the tool. |
+| `parameters` | `property → dict` | [JSON Schema](https://json-schema.org/) object describing the tool's parameters. Must have `"type": "object"`. |
+| `execute(**kwargs) → str` | `async method` | Runs the tool. Receives validated keyword arguments matching `parameters`. Must return a string result. |
+
+**Constructor convention:** If your `__init__` accepts a `context` keyword argument, the loader passes a `ToolContext` instance. Otherwise the class is instantiated with no arguments.
+
+**`ToolContext` fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `workspace` | `Path` | Absolute path to the nanobot workspace (e.g. `~/.nanobot/workspace`). |
+| `allowed_dir` | `Path \| None` | If `restrictToWorkspace` is enabled, this equals `workspace`. Otherwise `None`. Use this to enforce path restrictions in your tool. |
+| `working_dir` | `str` | Working directory for command execution (same as `str(workspace)`). |
+| `exec_timeout` | `int` | Configured exec timeout in seconds. |
+| `restrict_to_workspace` | `bool` | Whether workspace sandboxing is enabled. |
+| `brave_api_key` | `str \| None` | Brave Search API key, if configured. |
+
+</details>
+
+<details>
+<summary><b>Examples</b></summary>
+
+**Minimal tool (no context needed):**
+
+```python
+# ~/.nanobot/workspace/tools/dice.py
+import random
+from nanobot.agent.tools import Tool
+
+class DiceTool(Tool):
+    @property
+    def name(self): return "roll_dice"
+
+    @property
+    def description(self): return "Roll one or more dice and return the results"
+
+    @property
+    def parameters(self):
+        return {
+            "type": "object",
+            "properties": {
+                "sides": {"type": "integer", "description": "Number of sides per die", "minimum": 2, "maximum": 100},
+                "count": {"type": "integer", "description": "Number of dice to roll", "minimum": 1, "maximum": 20},
+            },
+            "required": [],
+        }
+
+    async def execute(self, sides: int = 6, count: int = 1, **kwargs) -> str:
+        rolls = [random.randint(1, sides) for _ in range(count)]
+        return f"Rolled {count}d{sides}: {rolls} (total: {sum(rolls)})"
+```
+
+**HTTP tool (calls an external API):**
+
+```python
+# ~/.nanobot/workspace/tools/weather.py
+import httpx
+from nanobot.agent.tools import Tool
+
+class WeatherTool(Tool):
+    @property
+    def name(self): return "weather"
+
+    @property
+    def description(self): return "Get current weather for a city using wttr.in"
+
+    @property
+    def parameters(self):
+        return {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name (e.g. 'London', 'New York')"},
+            },
+            "required": ["city"],
+        }
+
+    async def execute(self, city: str, **kwargs) -> str:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"https://wttr.in/{city}",
+                    params={"format": "3"},
+                    timeout=10.0,
+                )
+                r.raise_for_status()
+                return r.text.strip()
+        except Exception as e:
+            return f"Error fetching weather: {e}"
+```
+
+**Workspace-aware tool (reads files from workspace):**
+
+```python
+# ~/.nanobot/workspace/tools/notes.py
+from pathlib import Path
+from nanobot.agent.tools import Tool, ToolContext
+
+class SaveNoteTool(Tool):
+    def __init__(self, context: ToolContext):
+        self._notes_dir = context.workspace / "notes"
+        self._notes_dir.mkdir(exist_ok=True)
+
+    @property
+    def name(self): return "save_note"
+
+    @property
+    def description(self): return "Save a named note to the workspace"
+
+    @property
+    def parameters(self):
+        return {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Note title (used as filename)"},
+                "content": {"type": "string", "description": "Note content"},
+            },
+            "required": ["title", "content"],
+        }
+
+    async def execute(self, title: str, content: str, **kwargs) -> str:
+        safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in title)
+        path = self._notes_dir / f"{safe_name}.md"
+        path.write_text(f"# {title}\n\n{content}\n", encoding="utf-8")
+        return f"Note saved to {path}"
+
+
+class ListNotesTool(Tool):
+    def __init__(self, context: ToolContext):
+        self._notes_dir = context.workspace / "notes"
+
+    @property
+    def name(self): return "list_notes"
+
+    @property
+    def description(self): return "List all saved notes"
+
+    @property
+    def parameters(self):
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> str:
+        if not self._notes_dir.is_dir():
+            return "No notes found."
+        notes = sorted(self._notes_dir.glob("*.md"))
+        if not notes:
+            return "No notes found."
+        return "\n".join(f"- {n.stem}" for n in notes)
+```
+
+> A single file can define multiple `Tool` subclasses. Each is discovered and registered independently.
+
+**Multiple tools in one file** — both `save_note` and `list_notes` above are loaded from the same `notes.py`.
+
+</details>
+
+<details>
+<summary><b>Using plugin tools in subagent profiles</b></summary>
+
+Plugin tool names work just like built-in tool names in profile configs:
+
+```json
+{
+  "agents": {
+    "subagentProfiles": {
+      "researcher": {
+        "tools": ["web_search", "web_fetch", "weather", "read_file"],
+        "maxIterations": 10
+      },
+      "note-taker": {
+        "tools": ["save_note", "list_notes", "read_file"],
+        "skills": ["summarize"]
+      }
+    }
+  }
+}
+```
+
+When no profile is specified, subagents get **all** available tools (built-in + plugin).
+
+</details>
+
+<details>
+<summary><b>Rules & Troubleshooting</b></summary>
+
+**Discovery rules:**
+- Only `*.py` files in `{workspace}/tools/` are scanned (not subdirectories)
+- Files prefixed with `_` are skipped (e.g. `_helpers.py`) — use this for shared utility modules
+- Files are processed in alphabetical order; if two files define a tool with the same name, the first one wins
+- Built-in tools always take priority over plugins with the same name — you cannot override `read_file`, `exec`, etc.
+
+**Error handling:**
+- Syntax errors or import failures in a plugin are logged and skipped — they won't break the agent
+- If a `Tool` subclass fails to instantiate, it is skipped with a warning
+- The rest of the plugins and the agent continue normally
+
+**Debugging tips:**
+- Run `nanobot agent --logs` to see plugin loading messages
+- Look for `Registered plugin tool 'xxx'` in the logs to confirm loading
+- Look for `Failed to load plugin xxx` warnings if a tool isn't appearing
+- If a tool name collides with a built-in, you'll see `Plugin tool 'xxx' skipped — built-in takes priority`
+
+**Built-in tool names** (cannot be overridden): `read_file`, `write_file`, `edit_file`, `list_dir`, `exec`, `web_search`, `web_fetch`, `message`, `spawn`, `cron`
+
+</details>
+
 
 ## CLI Reference
 

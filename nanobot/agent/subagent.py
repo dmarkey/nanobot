@@ -1,31 +1,26 @@
 """Subagent manager for background task execution."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from loguru import logger
 
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
+from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
 
-# Mapping from tool name to the class that implements it
-_TOOL_NAME_MAP: dict[str, str] = {
-    "read_file": "ReadFileTool",
-    "write_file": "WriteFileTool",
-    "edit_file": "EditFileTool",
-    "list_dir": "ListDirTool",
-    "exec": "ExecTool",
-    "web_search": "WebSearchTool",
-    "web_fetch": "WebFetchTool",
-}
+if TYPE_CHECKING:
+    from nanobot.agent.tools.plugins import PluginLoader
 
 
 class SubagentManager:
@@ -50,6 +45,7 @@ class SubagentManager:
         restrict_to_workspace: bool = False,
         subagent_profiles: dict | None = None,
         default_max_iterations: int = 15,
+        plugin_loader: PluginLoader | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.provider = provider
@@ -63,6 +59,7 @@ class SubagentManager:
         self.restrict_to_workspace = restrict_to_workspace
         self.subagent_profiles = subagent_profiles or {}
         self.default_max_iterations = default_max_iterations
+        self._plugin_loader = plugin_loader
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def spawn(
@@ -229,57 +226,48 @@ class SubagentManager:
             logger.error("Subagent [{}] failed: {}", task_id, e)
             await self._announce_result(task_id, label, task, error_msg, origin, "error")
 
-    def _register_default_subagent_tools(self) -> ToolRegistry:
-        """Register the default tool set for subagents (no message, no spawn)."""
-        tools = ToolRegistry()
+    def _build_tool_factory(self) -> dict[str, Callable[[], Tool]]:
+        """Return a name→factory mapping for all available subagent tools."""
         allowed_dir = self.workspace if self.restrict_to_workspace else None
-        tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-        tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-        tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-        tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir))
+        factory: dict[str, Callable[[], Tool]] = {
+            "read_file": lambda: ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir),
+            "write_file": lambda: WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir),
+            "edit_file": lambda: EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir),
+            "list_dir": lambda: ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir),
+            "web_search": lambda: WebSearchTool(api_key=self.brave_api_key),
+            "web_fetch": lambda: WebFetchTool(),
+        }
         if self.exec_config.enabled:
-            tools.register(ExecTool(
+            factory["exec"] = lambda: ExecTool(
                 working_dir=str(self.workspace),
                 timeout=self.exec_config.timeout,
                 restrict_to_workspace=self.restrict_to_workspace,
-            ))
-        tools.register(WebSearchTool(api_key=self.brave_api_key))
-        tools.register(WebFetchTool())
+            )
+        # Add plugin tools
+        if self._plugin_loader:
+            for name, tool in self._plugin_loader.load().items():
+                if name not in factory:
+                    # Capture tool in closure properly
+                    factory[name] = lambda t=tool: t
+        return factory
+
+    def _register_default_subagent_tools(self) -> ToolRegistry:
+        """Register the default tool set for subagents (no message, no spawn)."""
+        tools = ToolRegistry()
+        for _name, make_tool in self._build_tool_factory().items():
+            tools.register(make_tool())
         return tools
 
     def _register_profile_tools(self, tool_names: list[str]) -> ToolRegistry:
         """Register only the whitelisted tools from a profile."""
         tools = ToolRegistry()
-        allowed_dir = self.workspace if self.restrict_to_workspace else None
+        factory = self._build_tool_factory()
 
         for name in tool_names:
-            if name not in _TOOL_NAME_MAP:
+            if name not in factory:
                 logger.warning("Unknown tool '{}' in subagent profile, skipping", name)
                 continue
-
-            # exec is always gated by the global enabled flag
-            if name == "exec" and not self.exec_config.enabled:
-                logger.debug("Tool 'exec' requested by profile but globally disabled, skipping")
-                continue
-
-            if name == "read_file":
-                tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            elif name == "write_file":
-                tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            elif name == "edit_file":
-                tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            elif name == "list_dir":
-                tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            elif name == "exec":
-                tools.register(ExecTool(
-                    working_dir=str(self.workspace),
-                    timeout=self.exec_config.timeout,
-                    restrict_to_workspace=self.restrict_to_workspace,
-                ))
-            elif name == "web_search":
-                tools.register(WebSearchTool(api_key=self.brave_api_key))
-            elif name == "web_fetch":
-                tools.register(WebFetchTool())
+            tools.register(factory[name]())
 
         return tools
 
