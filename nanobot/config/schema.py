@@ -189,13 +189,24 @@ class AgentDefaults(Base):
     max_tokens: int = 8192
     temperature: float = 0.1
     max_tool_iterations: int = 40
+    subagent_max_iterations: int = 15
     memory_window: int = 100
+
+
+class SubagentProfile(Base):
+    """Named subagent profile with specific capabilities."""
+
+    tools: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    model: str | None = None
+    max_iterations: int = 15
 
 
 class AgentsConfig(Base):
     """Agent configuration."""
 
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    subagent_profiles: dict[str, SubagentProfile] = Field(default_factory=dict)
 
 
 class ProviderConfig(Base):
@@ -251,6 +262,7 @@ class WebToolsConfig(Base):
 class ExecToolConfig(Base):
     """Shell exec tool configuration."""
 
+    enabled: bool = True
     timeout: int = 60
 
 

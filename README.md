@@ -803,8 +803,58 @@ MCP tools are automatically discovered and registered on startup. The LLM can us
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `tools.exec.enabled` | `true` | When `false`, disables the shell exec tool entirely for both the main agent and all subagents. |
 | `tools.restrictToWorkspace` | `false` | When `true`, restricts **all** agent tools (shell, file read/write/edit, list) to the workspace directory. Prevents path traversal and out-of-scope access. |
+| `channels.showToolProgress` | `false` | When `true`, sends tool-call progress messages (e.g. `web_search("query")`) to chat channels. Off by default to keep channels clean. |
 | `channels.*.allowFrom` | `[]` (allow all) | Whitelist of user IDs. Empty = allow everyone; non-empty = only listed users can interact. |
+
+Example — disable shell access:
+```json
+{
+  "tools": {
+    "exec": {
+      "enabled": false
+    }
+  }
+}
+```
+
+### Subagent Profiles
+
+Define named profiles to spawn specialized subagents with different tools, skills, models, and iteration limits.
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "subagentMaxIterations": 15
+    },
+    "subagentProfiles": {
+      "researcher": {
+        "tools": ["web_search", "web_fetch", "read_file", "list_dir"],
+        "skills": ["summarize"],
+        "model": "anthropic/claude-haiku-4-5",
+        "maxIterations": 10
+      },
+      "coder": {
+        "tools": ["read_file", "write_file", "edit_file", "exec", "list_dir"],
+        "skills": ["github"],
+        "maxIterations": 25
+      }
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `agents.defaults.subagentMaxIterations` | `15` | Default iteration limit for all subagents (overrides the previous hardcoded value). |
+| `subagentProfiles.*.tools` | `[]` (all tools) | Tool whitelist. Empty = default set (file ops, exec, web). Available: `read_file`, `write_file`, `edit_file`, `list_dir`, `exec`, `web_search`, `web_fetch`. |
+| `subagentProfiles.*.skills` | `[]` | Skills to pre-load into the subagent's system prompt. |
+| `subagentProfiles.*.model` | (inherit) | Override the LLM model for this profile. |
+| `subagentProfiles.*.maxIterations` | `15` | Override iteration limit for this profile. |
+
+The main agent's `spawn` tool gains an optional `profile` parameter. Spawning without a profile uses the default tool set and the `subagentMaxIterations` setting. The `exec` tool is always gated by `tools.exec.enabled` — even if a profile requests it.
 
 
 ## CLI Reference
