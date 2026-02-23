@@ -46,6 +46,7 @@ def _is_heartbeat_ok_response(response: str | None) -> bool:
     return normalized == HEARTBEAT_OK_TOKEN.replace("_", "")
 
 
+
 class HeartbeatService:
     """
     Periodic heartbeat service that wakes the agent to check for tasks.
