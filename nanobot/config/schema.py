@@ -244,6 +244,9 @@ class GatewayConfig(Base):
 
     host: str = "0.0.0.0"
     port: int = 18790
+    webhook_secret: str = ""  # Bearer token — empty = auto-generate temporary token on startup
+    webhook_channel: str = ""  # Default destination channel (e.g. "telegram")
+    webhook_chat_id: str = ""  # Default destination chat ID
 
 
 class WebSearchConfig(Base):

@@ -286,6 +286,7 @@ def gateway(
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
+    from nanobot.api.webhook import WebhookServer
     
     if verbose:
         import logging
@@ -393,21 +394,38 @@ def gateway(
         enabled=True
     )
     
+    # Create webhook server
+    webhook = WebhookServer(
+        bus=bus,
+        host=config.gateway.host,
+        port=config.gateway.port,
+        secret=config.gateway.webhook_secret,
+        default_channel=config.gateway.webhook_channel,
+        default_chat_id=config.gateway.webhook_chat_id,
+    )
+
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
         console.print("[yellow]Warning: No channels enabled[/yellow]")
-    
+
     cron_status = cron.status()
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
-    
+
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
+    console.print(f"[green]✓[/green] Webhook: http://{config.gateway.host}:{config.gateway.port}/notify")
+    if webhook.ephemeral:
+        console.print(f"[yellow]![/yellow] Webhook using temporary token: {webhook.secret}")
+        console.print(f'  To make permanent, add to config.json: {{"gateway": {{"webhookSecret": "{webhook.secret}"}}}}')
+    else:
+        console.print(f"[green]✓[/green] Webhook secret: configured")
     
     async def run():
         try:
             await cron.start()
             await heartbeat.start()
+            await webhook.start()
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
@@ -415,6 +433,7 @@ def gateway(
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
+            await webhook.stop()
             await agent.close_mcp()
             heartbeat.stop()
             cron.stop()

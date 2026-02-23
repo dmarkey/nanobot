@@ -1117,6 +1117,64 @@ When no profile is specified, subagents get **all** available tools (built-in + 
 
 </details>
 
+### Webhook Notifications
+
+External processes can push notifications into nanobot via a simple HTTP endpoint. The gateway starts an HTTP server on its configured port with a `POST /notify` route that injects messages into the agent's message bus. The agent processes the message and routes the response to the specified channel (e.g. Telegram, Discord).
+
+**Configuration:**
+
+```json
+{
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790,
+    "webhookSecret": "my-secret-token",
+    "webhookChannel": "telegram",
+    "webhookChatId": "12345"
+  }
+}
+```
+
+If `webhookSecret` is omitted, a temporary token is generated on each startup and printed to the console.
+
+**Send a notification (using config defaults):**
+
+```bash
+curl -X POST http://localhost:18790/notify \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer my-secret-token" \
+  -d '{"message": "Download complete: Ubuntu.iso"}'
+```
+
+**Override destination per-request:**
+
+```bash
+curl -X POST http://localhost:18790/notify \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer my-secret-token" \
+  -d '{"message": "Build passed", "channel": "discord", "chat_id": "99999"}'
+```
+
+**Payload format:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `message` | Yes | The notification text for the agent to process |
+| `channel` | No | Destination channel (overrides config `webhookChannel`) |
+| `chat_id` | No | Destination chat ID (overrides config `webhookChatId`) |
+
+**Responses:**
+
+| Status | Meaning |
+|--------|---------|
+| `202 Accepted` | Message queued for processing |
+| `400 Bad Request` | Missing `message` or no destination configured |
+| `401 Unauthorized` | Missing or invalid Bearer token |
+
+A `GET /health` endpoint returns `200 OK` for monitoring.
+
+**Use cases:** torrent client notifications, CI/CD build results, cron scripts, home automation events — anything that can call `curl`.
+
 
 ## CLI Reference
 
