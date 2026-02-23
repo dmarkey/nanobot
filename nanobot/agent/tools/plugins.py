@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -51,6 +52,12 @@ class PluginLoader:
             self._cache = tools
             return tools
 
+        # Ensure tools dir is on sys.path so plugins can import helpers
+        # (e.g. _base.py) from the same directory.
+        tools_str = str(self.tools_dir)
+        if tools_str not in sys.path:
+            sys.path.insert(0, tools_str)
+
         for path in sorted(self.tools_dir.glob("*.py")):
             if path.name.startswith("_"):
                 continue
@@ -86,6 +93,8 @@ class PluginLoader:
 
         for _attr_name, obj in inspect.getmembers(module, inspect.isclass):
             if not issubclass(obj, Tool) or obj is Tool:
+                continue
+            if inspect.isabstract(obj):
                 continue
             try:
                 instance = self._instantiate(obj)
