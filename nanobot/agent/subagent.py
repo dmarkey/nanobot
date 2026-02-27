@@ -38,7 +38,7 @@ class SubagentManager:
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
         default_max_iterations: int = 15,
-        plugin_loader: PluginLoader | None = None,
+        plugin_loader: "PluginLoader | None" = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.provider = provider
