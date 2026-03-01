@@ -114,6 +114,7 @@ class AgentLoop:
             restrict_to_workspace=restrict_to_workspace,
             default_max_iterations=subagent_max_iterations,
             plugin_loader=self._plugin_loader,
+            parent_tools=self.tools,
         )
 
         self._running = False

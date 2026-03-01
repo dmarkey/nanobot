@@ -39,6 +39,7 @@ class SubagentManager:
         restrict_to_workspace: bool = False,
         default_max_iterations: int = 15,
         plugin_loader: "PluginLoader | None" = None,
+        parent_tools: ToolRegistry | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.provider = provider
@@ -54,6 +55,7 @@ class SubagentManager:
         self.restrict_to_workspace = restrict_to_workspace
         self.default_max_iterations = default_max_iterations
         self._plugin_loader = plugin_loader
+        self._parent_tools = parent_tools
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
 
@@ -118,6 +120,13 @@ class SubagentManager:
             tools.register(WebFetchTool(proxy=self.web_proxy))
             if self._plugin_loader:
                 self._plugin_loader.register_into(tools)
+            if self._parent_tools:
+                from nanobot.agent.tools.mcp import MCPToolWrapper
+                for name in self._parent_tools.tool_names:
+                    tool = self._parent_tools.get(name)
+                    if isinstance(tool, MCPToolWrapper):
+                        tools.register(tool)
+                        logger.debug("Subagent [{}]: shared MCP tool '{}'", task_id, name)
 
             system_prompt = self._build_subagent_prompt()
             messages: list[dict[str, Any]] = [
