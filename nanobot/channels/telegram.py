@@ -178,6 +178,7 @@ class TelegramChannel(BaseChannel):
         self._media_group_buffers: dict[str, dict] = {}
         self._media_group_tasks: dict[str, asyncio.Task] = {}
         self._message_threads: dict[tuple[str, int], int] = {}
+        self._last_progress_msg_id: dict[int, int] = {}  # chat_id -> last progress message_id
 
     def is_allowed(self, sender_id: str) -> bool:
         """Preserve Telegram's legacy id|username allowlist matching."""
@@ -353,12 +354,28 @@ class TelegramChannel(BaseChannel):
         if msg.content and msg.content != "[empty message]":
             is_progress = msg.metadata.get("_progress", False)
 
-            for chunk in split_message(msg.content, TELEGRAM_MAX_MESSAGE_LEN):
-                # Final response: simulate streaming via draft, then persist
-                if not is_progress:
-                    await self._send_with_streaming(chat_id, chunk, reply_params, thread_kwargs)
-                else:
-                    await self._send_text(chat_id, chunk, reply_params, thread_kwargs)
+            if is_progress:
+                for chunk in split_message(msg.content, TELEGRAM_MAX_MESSAGE_LEN):
+                    prev_id = self._last_progress_msg_id.get(chat_id)
+                    if prev_id:
+                        if not await self._edit_text(chat_id, prev_id, chunk):
+                            msg_id = await self._send_text(chat_id, chunk, reply_params, thread_kwargs)
+                            if msg_id:
+                                self._last_progress_msg_id[chat_id] = msg_id
+                    else:
+                        msg_id = await self._send_text(chat_id, chunk, reply_params, thread_kwargs)
+                        if msg_id:
+                            self._last_progress_msg_id[chat_id] = msg_id
+            else:
+                # Final response: edit the last progress message if one exists
+                chunks = split_message(msg.content, TELEGRAM_MAX_MESSAGE_LEN)
+                prev_id = self._last_progress_msg_id.pop(chat_id, None)
+                for i, chunk in enumerate(chunks):
+                    if i == 0 and prev_id:
+                        if not await self._edit_text(chat_id, prev_id, chunk):
+                            await self._send_with_streaming(chat_id, chunk, reply_params, thread_kwargs)
+                    else:
+                        await self._send_with_streaming(chat_id, chunk, reply_params, thread_kwargs)
 
     async def _send_text(
         self,
@@ -366,26 +383,49 @@ class TelegramChannel(BaseChannel):
         text: str,
         reply_params=None,
         thread_kwargs: dict | None = None,
-    ) -> None:
-        """Send a plain text message with HTML fallback."""
+    ) -> int | None:
+        """Send a plain text message with HTML fallback. Returns the message_id."""
         try:
             html = _markdown_to_telegram_html(text)
-            await self._app.bot.send_message(
+            sent = await self._app.bot.send_message(
                 chat_id=chat_id, text=html, parse_mode="HTML",
                 reply_parameters=reply_params,
                 **(thread_kwargs or {}),
             )
+            return sent.message_id if sent else None
         except Exception as e:
             logger.warning("HTML parse failed, falling back to plain text: {}", e)
             try:
-                await self._app.bot.send_message(
+                sent = await self._app.bot.send_message(
                     chat_id=chat_id,
                     text=text,
                     reply_parameters=reply_params,
                     **(thread_kwargs or {}),
                 )
+                return sent.message_id if sent else None
             except Exception as e2:
                 logger.error("Error sending Telegram message: {}", e2)
+                return None
+
+    async def _edit_text(self, chat_id: int, message_id: int, text: str) -> bool:
+        """Edit an existing message. Returns True on success."""
+        try:
+            html = _markdown_to_telegram_html(text)
+            await self._app.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text=html, parse_mode="HTML",
+            )
+            return True
+        except Exception as e:
+            logger.warning("HTML edit failed, trying plain text: {}", e)
+            try:
+                await self._app.bot.edit_message_text(
+                    chat_id=chat_id, message_id=message_id, text=text,
+                )
+                return True
+            except Exception as e2:
+                logger.debug("Edit failed (message may be unchanged): {}", e2)
+                return False
 
     async def _send_with_streaming(
         self,
