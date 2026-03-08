@@ -342,6 +342,8 @@ def gateway(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         subagent_max_iterations=config.agents.defaults.subagent_max_iterations,
+        disabled_tools=config.agents.disabled_tools,
+        subagent_disabled_tools=config.agents.subagent_disabled_tools,
     )
 
     # Set cron callback (needs agent)
@@ -543,6 +545,8 @@ def agent(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         subagent_max_iterations=config.agents.defaults.subagent_max_iterations,
+        disabled_tools=config.agents.disabled_tools,
+        subagent_disabled_tools=config.agents.subagent_disabled_tools,
     )
 
     # Show spinner when logs are off (no output to miss); skip when logs are on
