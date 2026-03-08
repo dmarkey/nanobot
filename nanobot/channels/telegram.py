@@ -449,7 +449,14 @@ class TelegramChannel(BaseChannel):
             await asyncio.sleep(0.15)
         except Exception:
             pass
-        await self._send_text(chat_id, text, reply_params, thread_kwargs)
+        # Clear draft before sending the real message to prevent visual duplication
+        try:
+            await self._app.bot.send_message_draft(
+                chat_id=chat_id, draft_id=draft_id, text="",
+            )
+        except Exception:
+            pass
+        return await self._send_text(chat_id, text, reply_params, thread_kwargs)
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
