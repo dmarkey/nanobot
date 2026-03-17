@@ -595,6 +595,9 @@ class ESPHomeChannel(BaseChannel):
                     if not fut.done() and self._thinking_wav:
                         thinking_played = True
                         self._serve_tts_url(client, self._thinking_wav)
+                        client.send_voice_assistant_event(
+                            VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
+                        )
 
                 thinking_task = asyncio.create_task(_play_thinking())
                 try:
@@ -615,7 +618,12 @@ class ESPHomeChannel(BaseChannel):
             )
             logger.info("ESPHome: responding to '{}': {}", target.name, response_text)
 
-            # 3. TTS
+            # 3. TTS — if thinking prompt played, start a fresh pipeline
+            if thinking_played:
+                client.send_voice_assistant_event(
+                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START, None
+                )
+
             if not response_text.strip():
                 client.send_voice_assistant_event(
                     VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END, None
@@ -629,8 +637,6 @@ class ESPHomeChannel(BaseChannel):
                 VoiceAssistantEventType.VOICE_ASSISTANT_TTS_START,
                 {"text": response_text},
             )
-
-            tts_audio, tts_rate = await self._do_tts(response_text)
 
             wav_data = await self._tts_to_wav(response_text)
             if wav_data:
