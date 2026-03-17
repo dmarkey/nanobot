@@ -14,7 +14,7 @@ set -euo pipefail
 
 ENDPOINT_URL="${1:?Usage: $0 <endpoint-url> [locale] [invocation-name]}"
 LOCALE="${2:-en-GB}"
-INVOCATION_NAME="${3:-nano bot}"
+INVOCATION_NAME="${3:-my nano}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_PKG="$SCRIPT_DIR/skill-package"
 
