@@ -546,7 +546,7 @@ class ESPHomeChannel(BaseChannel):
             # Map voice commands to slash commands
             normalised = transcript.strip().lower().rstrip(".")
             voice_command = None
-            if normalised in ("new conversation", "start over", "reset"):
+            if normalised in ("new conversation", "new session", "start over", "reset"):
                 voice_command = "/new"
             elif normalised in ("stop", "cancel", "nevermind", "never mind"):
                 voice_command = "/stop"
