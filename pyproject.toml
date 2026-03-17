@@ -2,13 +2,13 @@
 name = "nanobot-ai-tng"
 version = "0.1.4.post5"
 description = "A lightweight personal AI assistant framework (fork with Alexa, additional providers, and subagent improvements)"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
     {name = "David Markey"},
     {name = "nanobot contributors"}
 ]
-readme = "README.md"
 keywords = ["ai", "agent", "chatbot"]
 classifiers = [
     "Development Status :: 3 - Alpha",
