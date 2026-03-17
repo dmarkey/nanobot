@@ -614,7 +614,7 @@ class ESPHomeChannel(BaseChannel):
 
             client.send_voice_assistant_event(
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END,
-                {"conversation_id": target.name},
+                {"conversation_id": target.name, "continue_conversation": "1"},
             )
             logger.info("ESPHome: responding to '{}': {}", target.name, response_text)
 
