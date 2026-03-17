@@ -115,6 +115,9 @@ class AlexaChannel(BaseChannel):
     1. Validates the Alexa request signature (when ``verify_signatures`` is true).
     2. Publishes the user's utterance to the message bus.
     3. Waits (up to ~7.5 s) for the agent's reply and speaks it back.
+
+    If the agent doesn't respond within the timeout, the answer is cached
+    when it eventually arrives and delivered on the user's next request.
     """
 
     name = "alexa"
@@ -125,6 +128,8 @@ class AlexaChannel(BaseChannel):
         self._runner: web.AppRunner | None = None
         # Map request_id -> Future[str] for synchronous response flow
         self._pending: dict[str, asyncio.Future[str]] = {}
+        # Cache late agent responses per user so the next request can deliver them
+        self._deferred: dict[str, str] = {}
 
     async def start(self) -> None:
         app = web.Application()
@@ -161,20 +166,21 @@ class AlexaChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Resolve the pending future so the HTTP handler can return the response."""
-        # Ignore progress messages — only deliver the final response
         if msg.metadata.get("_progress"):
             return
 
         request_id = msg.metadata.get("alexa_request_id")
         if not request_id:
-            # Fallback: use chat_id which we set to the request_id
             request_id = msg.chat_id
 
         fut = self._pending.get(request_id)
         if fut and not fut.done():
             fut.set_result(msg.content)
         else:
-            logger.warning("Alexa: no pending request for {}", request_id)
+            # Agent finished after we already timed out — cache for next request.
+            user_id = msg.chat_id  # chat_id is now the user_id
+            logger.info("Alexa: caching deferred response for user {}", user_id)
+            self._deferred[user_id] = msg.content
 
     # ------------------------------------------------------------------
     # HTTP handlers
@@ -323,16 +329,26 @@ class AlexaChannel(BaseChannel):
                 .get("userId", "alexa_user")
             )
 
+            # If the agent finished a previous request after we timed out,
+            # deliver that cached answer now.
+            deferred = self._deferred.pop(user_id, None)
+            if deferred:
+                logger.info("Alexa: delivering deferred response to {}", user_id)
+                return web.json_response(
+                    _build_response(deferred, end_session=False)
+                )
+
             # Create a future for the response
             loop = asyncio.get_running_loop()
             fut: asyncio.Future[str] = loop.create_future()
             self._pending[request_id] = fut
 
             try:
-                # Forward to message bus
+                # Forward to message bus — use user_id as chat_id so all
+                # utterances share one persistent session with full history.
                 await self._handle_message(
                     sender_id=user_id,
-                    chat_id=request_id,
+                    chat_id=user_id,
                     content=utterance,
                     metadata={"alexa_request_id": request_id},
                 )
@@ -346,7 +362,7 @@ class AlexaChannel(BaseChannel):
                 logger.warning("Alexa: agent response timed out for {}", request_id)
                 return web.json_response(
                     _build_response(
-                        "I'm still thinking about that. Please try again in a moment.",
+                        "I'm still working on that. Just ask me for the answer when I'm done.",
                         end_session=False,
                     )
                 )
