@@ -117,7 +117,6 @@ class ESPHomeChannel(BaseChannel):
         self._whisper_model: Any = None
         self._piper_voice: Any = None
         self._vad_model: Any = None
-        self._thinking_wav: bytes = b""  # Pre-generated "working on it" audio
         # TTS audio serving — satellites fetch TTS via URL
         self._tts_audio_store: dict[str, bytes] = {}  # id -> wav bytes
         self._http_runner: Any = None
@@ -270,22 +269,6 @@ class ESPHomeChannel(BaseChannel):
         logger.info("Loading piper voice '{}'...", model_path.name)
         self._piper_voice = PiperVoice.load(str(model_path))
         logger.info("Piper voice loaded (sample_rate={})", self._piper_voice.config.sample_rate)
-
-        # Pre-generate "thinking" audio so it's ready instantly
-        from piper.config import SynthesisConfig
-
-        audio = bytearray()
-        rate = 0
-        for chunk in self._piper_voice.synthesize("Just working on that.", SynthesisConfig()):
-            audio.extend(chunk.audio_int16_bytes)
-            rate = chunk.sample_rate
-        wav_buf = io.BytesIO()
-        with wave.open(wav_buf, "wb") as wf:
-            wf.setnchannels(_SAT_CHANNELS)
-            wf.setsampwidth(_SAT_WIDTH)
-            wf.setframerate(rate)
-            wf.writeframes(audio)
-        self._thinking_wav = wav_buf.getvalue()
 
     def _serve_tts_url(self, client: Any, wav_data: bytes) -> None:
         """Store WAV data and send TTS_END with URL to the satellite."""
@@ -600,30 +583,12 @@ class ESPHomeChannel(BaseChannel):
                     content=transcript,
                     metadata={"esphome_satellite": target.name},
                 )
-
-                # Play "thinking" prompt if agent takes more than 5s
-                thinking_played = False
-
-                async def _play_thinking() -> None:
-                    nonlocal thinking_played
-                    await asyncio.sleep(5.0)
-                    if not fut.done() and self._thinking_wav:
-                        thinking_played = True
-                        self._serve_tts_url(client, self._thinking_wav)
-                        client.send_voice_assistant_event(
-                            VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
-                        )
-
-                thinking_task = asyncio.create_task(_play_thinking())
-                try:
-                    response_text = await asyncio.wait_for(
-                        fut, timeout=self.config.response_timeout
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("ESPHome: agent response timed out for '{}'", target.name)
-                    response_text = "Sorry, I took too long to respond."
-                finally:
-                    thinking_task.cancel()
+                response_text = await asyncio.wait_for(
+                    fut, timeout=self.config.response_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning("ESPHome: agent response timed out for '{}'", target.name)
+                response_text = "Sorry, I took too long to respond."
             finally:
                 self._pending.pop(target.name, None)
 
@@ -634,12 +599,6 @@ class ESPHomeChannel(BaseChannel):
                 {"conversation_id": target.name, "continue_conversation": continue_conv},
             )
             logger.info("ESPHome: responding to '{}': {}", target.name, response_text)
-
-            # 3. TTS — if thinking prompt played, start a fresh pipeline
-            if thinking_played:
-                client.send_voice_assistant_event(
-                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START, None
-                )
 
             if not response_text.strip():
                 client.send_voice_assistant_event(

@@ -67,6 +67,9 @@ Edit `.env` to configure:
 # Wake word (options: okay_nabu, alexa, hey_jarvis, hey_mycroft,
 #   hey_luna, hey_home_assistant, okay_computer, choo_choo_homie)
 WAKE_MODEL="okay_computer"
+
+# Play a sound while the agent is thinking (recommended)
+ENABLE_THINKING_SOUND="1"
 ```
 
 Start it:
