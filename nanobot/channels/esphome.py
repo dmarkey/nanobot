@@ -133,10 +133,18 @@ class ESPHomeChannel(BaseChannel):
 
         async def _handle_tts(request: web.Request) -> web.Response:
             audio_id = request.match_info["audio_id"]
-            wav_data = self._tts_audio_store.pop(audio_id, None)
+            wav_data = self._tts_audio_store.get(audio_id)
             if wav_data is None:
                 return web.Response(status=404)
-            return web.Response(body=wav_data, content_type="audio/wav")
+            # Remove after serving (delayed to handle HEAD+GET from mpv)
+            asyncio.get_running_loop().call_later(
+                5.0, self._tts_audio_store.pop, audio_id, None
+            )
+            return web.Response(
+                body=wav_data,
+                content_type="audio/wav",
+                headers={"Content-Length": str(len(wav_data))},
+            )
 
         app = web.Application()
         app.router.add_get("/tts/{audio_id}.wav", _handle_tts)
