@@ -350,6 +350,7 @@ class ESPHomeChannel(BaseChannel):
                 vad_buffer = bytearray()
                 pipeline_active = False
                 speech_detected = False
+                pipeline_start_time = 0.0
                 last_speech_time = 0.0
 
                 async def _vad_silence_monitor() -> None:
@@ -383,15 +384,17 @@ class ESPHomeChannel(BaseChannel):
                     wake_word_phrase: str | None,
                 ) -> int:
                     nonlocal pipeline_active, speech_detected, last_speech_time
-                    nonlocal vad_timeout_task
+                    nonlocal vad_timeout_task, pipeline_start_time
                     audio_buffer.clear()
                     vad_buffer.clear()
                     pipeline_active = True
                     speech_detected = False
                     last_speech_time = 0.0
+                    pipeline_start_time = time.monotonic()
                     logger.info(
-                        "ESPHome: pipeline started on '{}' (wake: {}, flags={})",
+                        "ESPHome: pipeline started on '{}' (wake: {}, flags={}, continued={})",
                         target.name, wake_word_phrase or "none", flags,
+                        wake_word_phrase is None,
                     )
                     client.send_voice_assistant_event(
                         VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START, None
@@ -434,10 +437,14 @@ class ESPHomeChannel(BaseChannel):
                     audio_buffer.extend(data)
                     vad_buffer.extend(data)
 
-                    # Run VAD on complete frames
+                    # Run VAD on complete frames (skip first 1s to avoid TTS echo on continued conversations)
+                    echo_guard = (time.monotonic() - pipeline_start_time) < 1.0
                     while len(vad_buffer) >= _VAD_FRAME_BYTES:
                         frame = bytes(vad_buffer[:_VAD_FRAME_BYTES])
                         del vad_buffer[:_VAD_FRAME_BYTES]
+
+                        if echo_guard:
+                            continue
 
                         prob = self._run_vad(frame)
                         if prob >= self.config.speech_threshold:
@@ -585,9 +592,11 @@ class ESPHomeChannel(BaseChannel):
             finally:
                 self._pending.pop(target.name, None)
 
+            # Continue conversation (skip wake word) if the agent asked a question
+            continue_conv = "1" if response_text.rstrip().endswith("?") else "0"
             client.send_voice_assistant_event(
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END,
-                {"conversation_id": target.name},
+                {"conversation_id": target.name, "continue_conversation": continue_conv},
             )
             logger.info("ESPHome: responding to '{}': {}", target.name, response_text)
 
@@ -608,15 +617,18 @@ class ESPHomeChannel(BaseChannel):
             wav_data = await self._tts_to_wav(response_text)
             if wav_data:
                 self._serve_tts_url(client, wav_data)
+                # Don't send RUN_END here — the satellite's _tts_finished()
+                # callback (fired when mpv completes playback) handles
+                # end-of-pipeline and continue_conversation correctly.
+                # Sending RUN_END early resets satellite state while mpv
+                # is still playing, causing audio truncation.
             else:
                 client.send_voice_assistant_event(
                     VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END, None
                 )
-
-            # Done
-            client.send_voice_assistant_event(
-                VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
-            )
+                client.send_voice_assistant_event(
+                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
+                )
 
         except asyncio.CancelledError:
             raise
