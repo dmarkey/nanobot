@@ -360,6 +360,7 @@ class ESPHomeChannel(BaseChannel):
                 pipeline_active = False
                 speech_detected = False
                 last_speech_time = 0.0
+                pipeline_start_time = 0.0
 
                 async def _vad_silence_monitor() -> None:
                     """Monitor for silence timeout after speech is detected."""
@@ -392,15 +393,17 @@ class ESPHomeChannel(BaseChannel):
                     wake_word_phrase: str | None,
                 ) -> int:
                     nonlocal pipeline_active, speech_detected, last_speech_time
-                    nonlocal vad_timeout_task
+                    nonlocal vad_timeout_task, pipeline_start_time
                     audio_buffer.clear()
                     vad_buffer.clear()
                     pipeline_active = True
                     speech_detected = False
                     last_speech_time = 0.0
+                    pipeline_start_time = time.monotonic()
+                    is_continued = wake_word_phrase is None
                     logger.info(
-                        "ESPHome: pipeline started on '{}' (wake: {}, flags={})",
-                        target.name, wake_word_phrase or "none", flags,
+                        "ESPHome: pipeline started on '{}' (wake: {}, flags={}, continued={})",
+                        target.name, wake_word_phrase or "none", flags, is_continued,
                     )
                     client.send_voice_assistant_event(
                         VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START, None
@@ -443,10 +446,14 @@ class ESPHomeChannel(BaseChannel):
                     audio_buffer.extend(data)
                     vad_buffer.extend(data)
 
-                    # Run VAD on complete frames
+                    # Run VAD on complete frames (skip first 1s to avoid TTS echo)
+                    echo_guard = (time.monotonic() - pipeline_start_time) < 1.0
                     while len(vad_buffer) >= _VAD_FRAME_BYTES:
                         frame = bytes(vad_buffer[:_VAD_FRAME_BYTES])
                         del vad_buffer[:_VAD_FRAME_BYTES]
+
+                        if echo_guard:
+                            continue
 
                         prob = self._run_vad(frame)
                         if prob >= self.config.speech_threshold:
