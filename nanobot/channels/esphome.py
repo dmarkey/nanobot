@@ -117,6 +117,7 @@ class ESPHomeChannel(BaseChannel):
         self._whisper_model: Any = None
         self._piper_voice: Any = None
         self._vad_model: Any = None
+        self._thinking_wav: bytes = b""  # Pre-generated "working on it" audio
         # TTS audio serving — satellites fetch TTS via URL
         self._tts_audio_store: dict[str, bytes] = {}  # id -> wav bytes
         self._http_runner: Any = None
@@ -261,6 +262,37 @@ class ESPHomeChannel(BaseChannel):
         logger.info("Loading piper voice '{}'...", model_path.name)
         self._piper_voice = PiperVoice.load(str(model_path))
         logger.info("Piper voice loaded (sample_rate={})", self._piper_voice.config.sample_rate)
+
+        # Pre-generate "thinking" audio so it's ready instantly
+        from piper.config import SynthesisConfig
+
+        audio = bytearray()
+        rate = 0
+        for chunk in self._piper_voice.synthesize("Just working on that.", SynthesisConfig()):
+            audio.extend(chunk.audio_int16_bytes)
+            rate = chunk.sample_rate
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wf:
+            wf.setnchannels(_SAT_CHANNELS)
+            wf.setsampwidth(_SAT_WIDTH)
+            wf.setframerate(rate)
+            wf.writeframes(audio)
+        self._thinking_wav = wav_buf.getvalue()
+
+    def _serve_tts_url(self, client: Any, wav_data: bytes) -> None:
+        """Store WAV data and send TTS_END with URL to the satellite."""
+        from aioesphomeapi import VoiceAssistantEventType
+
+        audio_id = uuid.uuid4().hex[:12]
+        self._tts_audio_store[audio_id] = wav_data
+        asyncio.get_running_loop().call_later(
+            _TTS_STORE_TTL, self._tts_audio_store.pop, audio_id, None
+        )
+        tts_url = f"http://{self.config.host}:{self._http_port}/tts/{audio_id}.wav"
+        client.send_voice_assistant_event(
+            VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END,
+            {"url": tts_url},
+        )
 
     @staticmethod
     def _download_piper_voice(model_name: str, dest_dir: Path) -> None:
@@ -529,24 +561,9 @@ class ESPHomeChannel(BaseChannel):
                     metadata={"esphome_satellite": target.name},
                 )
                 confirmation = "Done." if voice_command == "/stop" else "New conversation started."
-                tts_audio, tts_rate = await self._do_tts(confirmation)
-                if tts_audio:
-                    audio_id = uuid.uuid4().hex[:12]
-                    wav_buf = io.BytesIO()
-                    with wave.open(wav_buf, "wb") as wf:
-                        wf.setnchannels(_SAT_CHANNELS)
-                        wf.setsampwidth(_SAT_WIDTH)
-                        wf.setframerate(tts_rate)
-                        wf.writeframes(tts_audio)
-                    self._tts_audio_store[audio_id] = wav_buf.getvalue()
-                    asyncio.get_running_loop().call_later(
-                        _TTS_STORE_TTL, self._tts_audio_store.pop, audio_id, None
-                    )
-                    tts_url = f"http://{self.config.host}:{self._http_port}/tts/{audio_id}.wav"
-                    client.send_voice_assistant_event(
-                        VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END,
-                        {"url": tts_url},
-                    )
+                wav_data = await self._tts_to_wav(confirmation)
+                if wav_data:
+                    self._serve_tts_url(client, wav_data)
                 client.send_voice_assistant_event(
                     VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
                 )
@@ -568,12 +585,27 @@ class ESPHomeChannel(BaseChannel):
                     content=transcript,
                     metadata={"esphome_satellite": target.name},
                 )
-                response_text = await asyncio.wait_for(
-                    fut, timeout=self.config.response_timeout
-                )
-            except asyncio.TimeoutError:
-                logger.warning("ESPHome: agent response timed out for '{}'", target.name)
-                response_text = "Sorry, I took too long to respond."
+
+                # Play "thinking" prompt if agent takes more than 5s
+                thinking_played = False
+
+                async def _play_thinking() -> None:
+                    nonlocal thinking_played
+                    await asyncio.sleep(5.0)
+                    if not fut.done() and self._thinking_wav:
+                        thinking_played = True
+                        self._serve_tts_url(client, self._thinking_wav)
+
+                thinking_task = asyncio.create_task(_play_thinking())
+                try:
+                    response_text = await asyncio.wait_for(
+                        fut, timeout=self.config.response_timeout
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("ESPHome: agent response timed out for '{}'", target.name)
+                    response_text = "Sorry, I took too long to respond."
+                finally:
+                    thinking_task.cancel()
             finally:
                 self._pending.pop(target.name, None)
 
@@ -600,29 +632,13 @@ class ESPHomeChannel(BaseChannel):
 
             tts_audio, tts_rate = await self._do_tts(response_text)
 
-            tts_url = ""
-            if tts_audio:
-                audio_id = uuid.uuid4().hex[:12]
-                wav_buf = io.BytesIO()
-                with wave.open(wav_buf, "wb") as wf:
-                    wf.setnchannels(_SAT_CHANNELS)
-                    wf.setsampwidth(_SAT_WIDTH)
-                    wf.setframerate(tts_rate)
-                    wf.writeframes(tts_audio)
-                self._tts_audio_store[audio_id] = wav_buf.getvalue()
-
-                # Auto-cleanup if satellite never fetches the audio
-                asyncio.get_running_loop().call_later(
-                    _TTS_STORE_TTL, self._tts_audio_store.pop, audio_id, None
+            wav_data = await self._tts_to_wav(response_text)
+            if wav_data:
+                self._serve_tts_url(client, wav_data)
+            else:
+                client.send_voice_assistant_event(
+                    VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END, None
                 )
-
-                tts_url = f"http://{self.config.host}:{self._http_port}/tts/{audio_id}.wav"
-                logger.debug("ESPHome: TTS audio URL: {}", tts_url)
-
-            client.send_voice_assistant_event(
-                VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END,
-                {"url": tts_url} if tts_url else None,
-            )
 
             # Done
             client.send_voice_assistant_event(
@@ -707,3 +723,16 @@ class ESPHomeChannel(BaseChannel):
             return bytes(audio), rate
 
         return await asyncio.get_running_loop().run_in_executor(None, _synthesize)
+
+    async def _tts_to_wav(self, text: str) -> bytes:
+        """Synthesize text and return WAV bytes (or empty bytes on failure)."""
+        tts_audio, tts_rate = await self._do_tts(text)
+        if not tts_audio:
+            return b""
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wf:
+            wf.setnchannels(_SAT_CHANNELS)
+            wf.setsampwidth(_SAT_WIDTH)
+            wf.setframerate(tts_rate)
+            wf.writeframes(tts_audio)
+        return wav_buf.getvalue()
