@@ -363,12 +363,17 @@ class AlexaChannel(BaseChannel):
                 )
             except asyncio.TimeoutError:
                 logger.warning("Alexa: agent response timed out for {}", request_id)
-                return web.json_response(
-                    _build_response(
-                        "I'm still working on that. Just ask me for the answer when I'm done.",
-                        end_session=False,
-                    )
+                resp = _build_response(
+                    "I'm still working on that. Just ask me for the answer when I'm done.",
+                    end_session=False,
                 )
+                resp["response"]["reprompt"] = {
+                    "outputSpeech": {
+                        "type": "PlainText",
+                        "text": "Are you still there?",
+                    }
+                }
+                return web.json_response(resp)
             finally:
                 self._pending.pop(request_id, None)
 
