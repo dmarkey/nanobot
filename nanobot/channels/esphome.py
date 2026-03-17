@@ -612,9 +612,11 @@ class ESPHomeChannel(BaseChannel):
             finally:
                 self._pending.pop(target.name, None)
 
+            # Continue conversation (skip wake word) if the agent asked a question
+            continue_conv = "1" if response_text.rstrip().endswith("?") else "0"
             client.send_voice_assistant_event(
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END,
-                {"conversation_id": target.name, "continue_conversation": "1"},
+                {"conversation_id": target.name, "continue_conversation": continue_conv},
             )
             logger.info("ESPHome: responding to '{}': {}", target.name, response_text)
 
