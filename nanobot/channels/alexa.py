@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -322,12 +323,14 @@ class AlexaChannel(BaseChannel):
                     )
                 )
 
-            # Determine sender identity
-            user_id = (
+            # Determine sender identity — hash the long Alexa user ID
+            # to keep session filenames within filesystem limits.
+            raw_user_id = (
                 data.get("session", {})
                 .get("user", {})
                 .get("userId", "alexa_user")
             )
+            user_id = hashlib.sha256(raw_user_id.encode()).hexdigest()[:16]
 
             # If the agent finished a previous request after we timed out,
             # deliver that cached answer now.
