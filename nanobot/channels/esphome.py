@@ -82,7 +82,7 @@ class ESPHomeConfig(Base):
     satellites: list[ESPHomeSatelliteTarget] = Field(default_factory=list)
     stt: STTConfig = Field(default_factory=STTConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
-    response_timeout: float = 30.0
+    response_timeout: float = 120.0
     allow_from: list[str] = Field(default_factory=lambda: ["*"])
     reconnect_interval: float = 5.0
     silence_timeout_seconds: float = _SILENCE_TIMEOUT
@@ -115,6 +115,8 @@ class ESPHomeChannel(BaseChannel):
         self.config: ESPHomeConfig = config
         self._satellite_tasks: list[asyncio.Task] = []
         self._pending: dict[str, asyncio.Future[str]] = {}
+        # Cache late agent responses per satellite
+        self._deferred: dict[str, str] = {}
         # Lazy-loaded models (shared across satellites, loaded once)
         self._whisper_model: Any = None
         self._piper_voice: Any = None
@@ -227,7 +229,9 @@ class ESPHomeChannel(BaseChannel):
         if fut and not fut.done():
             fut.set_result(msg.content)
         else:
-            logger.warning("ESPHome: no pending request for satellite '{}'", sat_name)
+            # Agent finished after we already timed out — cache for next request.
+            logger.info("ESPHome: caching deferred response for '{}'", sat_name)
+            self._deferred[sat_name] = msg.content
 
     # ------------------------------------------------------------------
     # Model loading
@@ -597,28 +601,77 @@ class ESPHomeChannel(BaseChannel):
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_START, None
             )
 
-            loop = asyncio.get_running_loop()
-            fut: asyncio.Future[str] = loop.create_future()
-            self._pending[target.name] = fut
+            # Check for a deferred response from a previous timed-out request.
+            deferred = self._deferred.pop(target.name, None)
+            if deferred:
+                logger.info("ESPHome: delivering deferred response to '{}'", target.name)
+                response_text = deferred
+            else:
+                loop = asyncio.get_running_loop()
+                fut: asyncio.Future[str] = loop.create_future()
+                self._pending[target.name] = fut
 
-            try:
-                await self._handle_message(
-                    sender_id=target.name,
-                    chat_id=target.name,
-                    content=transcript,
-                    metadata={"esphome_satellite": target.name},
-                )
-                response_text = await asyncio.wait_for(
-                    fut, timeout=self.config.response_timeout
-                )
-            except asyncio.TimeoutError:
-                logger.warning("ESPHome: agent response timed out for '{}'", target.name)
-                response_text = "Sorry, I took too long to respond."
-            finally:
-                self._pending.pop(target.name, None)
+                try:
+                    await self._handle_message(
+                        sender_id=target.name,
+                        chat_id=target.name,
+                        content=transcript,
+                        metadata={"esphome_satellite": target.name},
+                    )
+                    # Wait up to 30s for the first response, then say "still working"
+                    # and keep waiting up to the full timeout.
+                    _INTERIM_TIMEOUT = 30.0
+                    try:
+                        response_text = await asyncio.wait_for(
+                            fut, timeout=_INTERIM_TIMEOUT
+                        )
+                    except asyncio.TimeoutError:
+                        # Say "still working" — end this pipeline cleanly,
+                        # then wait for the real answer and deliver it as a new pipeline.
+                        logger.info("ESPHome: interim timeout on '{}', sending progress", target.name)
+                        interim_text = "I'm still working on that. Just a moment."
+                        client.send_voice_assistant_event(
+                            VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END,
+                            {"conversation_id": target.name, "continue_conversation": "0"},
+                        )
+                        client.send_voice_assistant_event(
+                            VoiceAssistantEventType.VOICE_ASSISTANT_TTS_START,
+                            {"text": interim_text},
+                        )
+                        interim_wav = await self._tts_to_wav(interim_text)
+                        if interim_wav:
+                            self._serve_tts_url(client, interim_wav)
+                        else:
+                            client.send_voice_assistant_event(
+                                VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
+                            )
 
-            # Continue conversation (skip wake word) if the agent asked a question
-            continue_conv = "1" if response_text.rstrip().endswith("?") else "0"
+                        # Wait for the real answer
+                        remaining = self.config.response_timeout - _INTERIM_TIMEOUT
+                        fut2: asyncio.Future[str] = loop.create_future()
+                        self._pending[target.name] = fut2
+                        try:
+                            response_text = await asyncio.wait_for(
+                                fut2, timeout=remaining
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning("ESPHome: agent response timed out for '{}'", target.name)
+                            response_text = "Sorry, I took too long to respond. Ask me again in a moment."
+
+                        # Deliver the real answer as a fresh pipeline
+                        # so the satellite plays it properly.
+                        await asyncio.sleep(1.0)  # wait for interim TTS to finish
+                        client.send_voice_assistant_event(
+                            VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START, None
+                        )
+                except asyncio.CancelledError:
+                    raise
+                finally:
+                    self._pending.pop(target.name, None)
+
+            # Always continue conversation — let the no-speech timeout
+            # naturally end the session so the user knows when it's over.
+            continue_conv = "1"
             client.send_voice_assistant_event(
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END,
                 {"conversation_id": target.name, "continue_conversation": continue_conv},

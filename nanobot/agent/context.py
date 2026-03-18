@@ -101,10 +101,11 @@ Before performing destructive or irreversible actions, use the 'confirm_action' 
 When you need the user's location (weather, directions, nearby places), use the 'ask_user_location' tool instead of asking them to type an address."""
 
     _VOICE_CHANNEL_HINT = (
-        "IMPORTANT: This is a voice channel with a strict ~7 second response time limit. "
-        "Reply in 1-2 short spoken sentences. Use at most 1 tool call only if essential. "
-        "Do NOT use markdown, links, code blocks, or any formatting — the response will be "
-        "read aloud. Be direct and conversational."
+        "CRITICAL: This is a voice channel. You MUST keep responses under 30 words — "
+        "the user has only a few seconds to listen before the session times out. "
+        "One short sentence is ideal, two at most. Never use lists, markdown, links, "
+        "code blocks, or formatting — everything is read aloud. Be concise and conversational. "
+        "Use at most 1 tool call only if essential."
     )
 
     @staticmethod
