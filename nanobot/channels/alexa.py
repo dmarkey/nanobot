@@ -95,18 +95,22 @@ def _verify_signature(cert: x509.Certificate, signature_b64: str, body: bytes) -
         return False
 
 
-def _build_response(speech: str, end_session: bool = True) -> dict:
+def _build_response(
+    speech: str, end_session: bool = True, reprompt: str | None = None,
+) -> dict:
     """Build an Alexa JSON response with plain-text output speech."""
-    return {
-        "version": "1.0",
-        "response": {
-            "outputSpeech": {
-                "type": "PlainText",
-                "text": speech,
-            },
-            "shouldEndSession": end_session,
+    resp: dict = {
+        "outputSpeech": {
+            "type": "PlainText",
+            "text": speech,
         },
+        "shouldEndSession": end_session,
     }
+    if reprompt:
+        resp["reprompt"] = {
+            "outputSpeech": {"type": "PlainText", "text": reprompt},
+        }
+    return {"version": "1.0", "response": resp}
 
 
 class AlexaChannel(BaseChannel):
@@ -335,7 +339,7 @@ class AlexaChannel(BaseChannel):
             if deferred:
                 logger.info("Alexa: delivering deferred response to {}", user_id)
                 return web.json_response(
-                    _build_response(deferred, end_session=False)
+                    _build_response(deferred, end_session=False, reprompt="Anything else?")
                 )
 
             # Create a future for the response
@@ -356,21 +360,17 @@ class AlexaChannel(BaseChannel):
                 # Wait for the agent response
                 response_text = await asyncio.wait_for(fut, timeout=_RESPONSE_TIMEOUT)
                 return web.json_response(
-                    _build_response(response_text, end_session=False)
+                    _build_response(response_text, end_session=False, reprompt="Anything else?")
                 )
             except asyncio.TimeoutError:
                 logger.warning("Alexa: agent response timed out for {}", request_id)
-                resp = _build_response(
-                    "I'm still working on that. Just ask me for the answer when I'm done.",
-                    end_session=False,
+                return web.json_response(
+                    _build_response(
+                        "I'm still working on that. Just ask me for the answer when I'm done.",
+                        end_session=False,
+                        reprompt="Are you still there?",
+                    )
                 )
-                resp["response"]["reprompt"] = {
-                    "outputSpeech": {
-                        "type": "PlainText",
-                        "text": "Are you still there?",
-                    }
-                }
-                return web.json_response(resp)
             finally:
                 self._pending.pop(request_id, None)
 
