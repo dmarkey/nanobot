@@ -9,7 +9,7 @@
           "slots": [
             {
               "name": "utterance",
-              "type": "FREE_TEXT",
+              "type": "AMAZON.SearchQuery",
               "elicitationRequired": true,
               "confirmationRequired": false,
               "prompts": {
@@ -29,7 +29,7 @@
           "slots": [
             {
               "name": "utterance",
-              "type": "FREE_TEXT",
+              "type": "AMAZON.SearchQuery",
               "samples": [
                 "{utterance}",
                 "about {utterance}",
