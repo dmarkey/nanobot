@@ -269,7 +269,7 @@ class AlexaChannel(BaseChannel):
             intent = data["request"].get("intent", {})
             intent_name = intent.get("name", "")
 
-            # Built-in intents
+            # Built-in intents that end the session
             if intent_name in ("AMAZON.StopIntent", "AMAZON.CancelIntent"):
                 return web.json_response(_build_response("Goodbye."))
             if intent_name == "AMAZON.HelpIntent":
@@ -287,13 +287,28 @@ class AlexaChannel(BaseChannel):
                     )
                 )
 
+            # Built-in intents that should be forwarded to the agent
+            # as natural language so conversational flow isn't broken.
+            _INTENT_TO_TEXT = {
+                "AMAZON.YesIntent": "yes",
+                "AMAZON.NoIntent": "no",
+                "AMAZON.RepeatIntent": "can you repeat that",
+                "AMAZON.StartOverIntent": "let's start over",
+                "AMAZON.NextIntent": "next",
+                "AMAZON.PreviousIntent": "go back",
+                "AMAZON.ResumeIntent": "continue",
+                "AMAZON.PauseIntent": "pause",
+                "AMAZON.MoreIntent": "tell me more",
+            }
+
             # Extract the user's utterance from the catch-all slot
             slots = intent.get("slots", {})
-            utterance = ""
-            for slot in slots.values():
-                if slot.get("value"):
-                    utterance = slot["value"]
-                    break
+            utterance = _INTENT_TO_TEXT.get(intent_name, "")
+            if not utterance:
+                for slot in slots.values():
+                    if slot.get("value"):
+                        utterance = slot["value"]
+                        break
 
             if not utterance:
                 return web.json_response(
