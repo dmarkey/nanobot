@@ -19,7 +19,7 @@
           ]
         }
       ],
-      "delegationStrategy": "ALWAYS"
+      "delegationStrategy": "SKILL_RESPONSE"
     },
     "languageModel": {
       "invocationName": "my nano",
@@ -31,9 +31,43 @@
               "name": "utterance",
               "type": "AMAZON.SearchQuery",
               "samples": [
+                "{utterance}",
                 "about {utterance}",
                 "for {utterance}",
-                "regarding {utterance}"
+                "regarding {utterance}",
+                "that {utterance}",
+                "that's {utterance}",
+                "it's {utterance}",
+                "this {utterance}",
+                "yeah {utterance}",
+                "yes {utterance}",
+                "no {utterance}",
+                "ok {utterance}",
+                "sure {utterance}",
+                "well {utterance}",
+                "so {utterance}",
+                "but {utterance}",
+                "and {utterance}",
+                "I {utterance}",
+                "he {utterance}",
+                "she {utterance}",
+                "we {utterance}",
+                "they {utterance}",
+                "you {utterance}",
+                "the {utterance}",
+                "a {utterance}",
+                "my {utterance}",
+                "not {utterance}",
+                "just {utterance}",
+                "really {utterance}",
+                "actually {utterance}",
+                "maybe {utterance}",
+                "how {utterance}",
+                "what {utterance}",
+                "why {utterance}",
+                "when {utterance}",
+                "where {utterance}",
+                "who {utterance}"
               ]
             }
           ],
