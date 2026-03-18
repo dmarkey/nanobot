@@ -34,7 +34,9 @@ _SAT_CHANNELS = 1
 _VAD_FRAME_SAMPLES = 512  # silero expects multiples of 512 samples
 _VAD_FRAME_BYTES = _VAD_FRAME_SAMPLES * _SAT_WIDTH
 _SPEECH_THRESHOLD = 0.5  # probability above which we consider speech
-_SILENCE_TIMEOUT = 0.8  # seconds of silence after speech to trigger end
+_SILENCE_TIMEOUT = 1.5  # seconds of silence after speech to trigger end
+_NO_SPEECH_TIMEOUT = 5.0  # seconds to wait for speech before giving up
+_MAX_RECORDING = 30.0  # hard cap on recording duration
 
 # Auto-cleanup TTS audio entries after this many seconds
 _TTS_STORE_TTL = 30.0
@@ -354,13 +356,36 @@ class ESPHomeChannel(BaseChannel):
                 last_speech_time = 0.0
 
                 async def _vad_silence_monitor() -> None:
-                    """Monitor for silence timeout after speech is detected."""
+                    """Monitor for silence after speech, or no speech / max recording."""
                     nonlocal pipeline_active
-                    while pipeline_active and speech_detected:
+                    while pipeline_active:
                         await asyncio.sleep(0.1)
+                        if not pipeline_active:
+                            return
+                        elapsed = time.monotonic() - pipeline_start_time
+
+                        # Hard cap on total recording time
+                        if elapsed > _MAX_RECORDING:
+                            logger.info(
+                                "ESPHome: max recording time reached on '{}' ({:.0f}s)",
+                                target.name, _MAX_RECORDING,
+                            )
+                            await handle_stop(False)
+                            return
+
+                        # No speech detected within timeout — give up
+                        if not speech_detected and elapsed > _NO_SPEECH_TIMEOUT:
+                            logger.info(
+                                "ESPHome: no speech detected on '{}' after {:.0f}s, ending",
+                                target.name, _NO_SPEECH_TIMEOUT,
+                            )
+                            await handle_stop(True)
+                            return
+
+                        # Silence after speech — user finished talking
                         if (
                             speech_detected
-                            and pipeline_active
+                            and last_speech_time > 0
                             and (time.monotonic() - last_speech_time)
                             > self.config.silence_timeout_seconds
                         ):
@@ -399,6 +424,9 @@ class ESPHomeChannel(BaseChannel):
                     client.send_voice_assistant_event(
                         VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START, None
                     )
+                    # Start the monitor immediately so it can detect
+                    # no-speech and max-recording timeouts.
+                    vad_timeout_task = asyncio.create_task(_vad_silence_monitor())
                     return 0  # API audio mode
 
                 async def handle_stop(abort: bool) -> None:
@@ -457,9 +485,6 @@ class ESPHomeChannel(BaseChannel):
                                 client.send_voice_assistant_event(
                                     VoiceAssistantEventType.VOICE_ASSISTANT_STT_VAD_START,
                                     None,
-                                )
-                                vad_timeout_task = asyncio.create_task(
-                                    _vad_silence_monitor()
                                 )
                             last_speech_time = time.monotonic()
 
