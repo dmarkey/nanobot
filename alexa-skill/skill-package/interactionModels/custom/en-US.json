@@ -843,6 +843,10 @@
           "samples": []
         },
         {
+          "name": "AMAZON.SelectIntent",
+          "samples": []
+        },
+        {
           "name": "AMAZON.CancelIntent",
           "samples": []
         },

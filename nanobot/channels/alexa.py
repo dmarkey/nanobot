@@ -299,6 +299,8 @@ class AlexaChannel(BaseChannel):
                 "AMAZON.ResumeIntent": "continue",
                 "AMAZON.PauseIntent": "pause",
                 "AMAZON.MoreIntent": "tell me more",
+                "AMAZON.NavigateHomeIntent": "go home",
+                "AMAZON.SelectIntent": "select that",
             }
 
             # Extract the user's utterance from the catch-all slot
