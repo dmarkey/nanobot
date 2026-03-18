@@ -97,8 +97,15 @@ def _verify_signature(cert: x509.Certificate, signature_b64: str, body: bytes) -
 
 def _build_response(
     speech: str, end_session: bool = True, reprompt: str | None = None,
+    elicit: bool = False,
 ) -> dict:
-    """Build an Alexa JSON response with plain-text output speech."""
+    """Build an Alexa JSON response with plain-text output speech.
+
+    When *elicit* is True, a Dialog.ElicitSlot directive is added so
+    Alexa stays in slot-filling mode.  This makes Alexa far more
+    permissive about what speech it accepts as a follow-up, which is
+    critical for natural conversation.
+    """
     resp: dict = {
         "outputSpeech": {
             "type": "PlainText",
@@ -110,6 +117,25 @@ def _build_response(
         resp["reprompt"] = {
             "outputSpeech": {"type": "PlainText", "text": reprompt},
         }
+    if elicit:
+        # shouldEndSession must be omitted (not False) when using directives
+        resp.pop("shouldEndSession", None)
+        resp["directives"] = [
+            {
+                "type": "Dialog.ElicitSlot",
+                "slotToElicit": "utterance",
+                "updatedIntent": {
+                    "name": "CatchAllIntent",
+                    "confirmationStatus": "NONE",
+                    "slots": {
+                        "utterance": {
+                            "name": "utterance",
+                            "confirmationStatus": "NONE",
+                        }
+                    },
+                },
+            }
+        ]
     return {"version": "1.0", "response": resp}
 
 
@@ -255,13 +281,11 @@ class AlexaChannel(BaseChannel):
         req_type = data.get("request", {}).get("type", "")
         request_id = data.get("request", {}).get("requestId", "")
 
-        # Handle LaunchRequest
+        # Handle LaunchRequest — use elicit to enter slot-filling mode
+        # so Alexa is permissive about what follow-up speech it accepts.
         if req_type == "LaunchRequest":
             return web.json_response(
-                _build_response(
-                    self.config.launch_message,
-                    end_session=False,
-                )
+                _build_response(self.config.launch_message, elicit=True)
             )
 
         # Handle SessionEndedRequest
@@ -280,14 +304,14 @@ class AlexaChannel(BaseChannel):
                 return web.json_response(
                     _build_response(
                         "Just tell me what you need and I'll do my best to help.",
-                        end_session=False,
+                        elicit=True,
                     )
                 )
             if intent_name == "AMAZON.FallbackIntent":
                 return web.json_response(
                     _build_response(
-                        "Sorry, I didn't quite catch that. Try starting with something like 'what is' or 'tell me about'.",
-                        end_session=False,
+                        "Sorry, I didn't quite catch that. Could you rephrase?",
+                        elicit=True,
                     )
                 )
 
@@ -320,7 +344,7 @@ class AlexaChannel(BaseChannel):
                 return web.json_response(
                     _build_response(
                         "I didn't catch that. Could you say it again?",
-                        end_session=False,
+                        elicit=True,
                     )
                 )
 
@@ -339,7 +363,7 @@ class AlexaChannel(BaseChannel):
             if deferred:
                 logger.info("Alexa: delivering deferred response to {}", user_id)
                 return web.json_response(
-                    _build_response(deferred, end_session=False, reprompt="Anything else?")
+                    _build_response(deferred, elicit=True)
                 )
 
             # Create a future for the response
@@ -360,15 +384,14 @@ class AlexaChannel(BaseChannel):
                 # Wait for the agent response
                 response_text = await asyncio.wait_for(fut, timeout=_RESPONSE_TIMEOUT)
                 return web.json_response(
-                    _build_response(response_text, end_session=False, reprompt="Anything else?")
+                    _build_response(response_text, elicit=True)
                 )
             except asyncio.TimeoutError:
                 logger.warning("Alexa: agent response timed out for {}", request_id)
                 return web.json_response(
                     _build_response(
                         "I'm still working on that. Just ask me for the answer when I'm done.",
-                        end_session=False,
-                        reprompt="Are you still there?",
+                        elicit=True,
                     )
                 )
             finally:
