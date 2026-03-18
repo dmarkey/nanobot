@@ -281,11 +281,15 @@ class AlexaChannel(BaseChannel):
         req_type = data.get("request", {}).get("type", "")
         request_id = data.get("request", {}).get("requestId", "")
 
-        # Handle LaunchRequest — use elicit to enter slot-filling mode
-        # so Alexa is permissive about what follow-up speech it accepts.
+        # Handle LaunchRequest — Dialog.ElicitSlot is only valid for
+        # IntentRequest, so use shouldEndSession=false with a reprompt.
         if req_type == "LaunchRequest":
             return web.json_response(
-                _build_response(self.config.launch_message, elicit=True)
+                _build_response(
+                    self.config.launch_message,
+                    end_session=False,
+                    reprompt="What would you like to know?",
+                )
             )
 
         # Handle SessionEndedRequest

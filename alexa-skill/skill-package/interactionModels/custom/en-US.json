@@ -9,7 +9,7 @@
           "slots": [
             {
               "name": "utterance",
-              "type": "AMAZON.SearchQuery",
+              "type": "FREE_TEXT",
               "elicitationRequired": true,
               "confirmationRequired": false,
               "prompts": {
@@ -29,7 +29,7 @@
           "slots": [
             {
               "name": "utterance",
-              "type": "AMAZON.SearchQuery",
+              "type": "FREE_TEXT",
               "samples": [
                 "{utterance}",
                 "about {utterance}",
@@ -901,7 +901,53 @@
           "samples": []
         }
       ],
-      "types": []
+      "types": [
+        {
+          "name": "FREE_TEXT",
+          "values": [
+            {"name": {"value": "that's bad isn't it"}},
+            {"name": {"value": "yeah do that"}},
+            {"name": {"value": "sounds good"}},
+            {"name": {"value": "no thanks"}},
+            {"name": {"value": "tell me more about that"}},
+            {"name": {"value": "what do you mean"}},
+            {"name": {"value": "I don't understand"}},
+            {"name": {"value": "can you explain"}},
+            {"name": {"value": "why is that"}},
+            {"name": {"value": "how does that work"}},
+            {"name": {"value": "that's interesting"}},
+            {"name": {"value": "go on"}},
+            {"name": {"value": "never mind"}},
+            {"name": {"value": "let me think"}},
+            {"name": {"value": "I'm not sure"}},
+            {"name": {"value": "that makes sense"}},
+            {"name": {"value": "what happened next"}},
+            {"name": {"value": "is that true"}},
+            {"name": {"value": "are you sure"}},
+            {"name": {"value": "really"}},
+            {"name": {"value": "wow"}},
+            {"name": {"value": "ok"}},
+            {"name": {"value": "right"}},
+            {"name": {"value": "got it"}},
+            {"name": {"value": "thanks"}},
+            {"name": {"value": "thank you"}},
+            {"name": {"value": "please continue"}},
+            {"name": {"value": "say that again"}},
+            {"name": {"value": "what else"}},
+            {"name": {"value": "anything else"}},
+            {"name": {"value": "the weather tomorrow"}},
+            {"name": {"value": "how to make pasta"}},
+            {"name": {"value": "what time is it in Tokyo"}},
+            {"name": {"value": "who invented the telephone"}},
+            {"name": {"value": "turn off the lights"}},
+            {"name": {"value": "set a timer for five minutes"}},
+            {"name": {"value": "play some music"}},
+            {"name": {"value": "what's the capital of France"}},
+            {"name": {"value": "translate hello to Spanish"}},
+            {"name": {"value": "remind me to buy milk"}}
+          ]
+        }
+      ]
     },
     "prompts": [
       {
