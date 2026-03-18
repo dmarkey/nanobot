@@ -294,6 +294,9 @@ class AlexaChannel(BaseChannel):
 
         # Handle SessionEndedRequest
         if req_type == "SessionEndedRequest":
+            reason = data.get("request", {}).get("reason", "unknown")
+            error = data.get("request", {}).get("error", {})
+            logger.info("Alexa: session ended — reason={}, error={}", reason, error)
             return web.json_response(_build_response("Goodbye."))
 
         # Handle IntentRequest
