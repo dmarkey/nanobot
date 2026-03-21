@@ -23,6 +23,14 @@
 
 This is a fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot) with the following additions:
 
+### ESPHome Voice Channel
+- Local voice assistant pipeline: wake word → VAD → STT → agent → TTS
+- Connects to [ESPHome](https://esphome.io/) voice satellites (ESP32-S3, [linux-voice-assistant](https://github.com/OHF-Voice/linux-voice-assistant)) via Native API
+- Server-side Silero VAD, local STT (faster-whisper) or cloud (Groq), local TTS (piper-tts)
+- Always-on conversation mode — no wake word needed for follow-ups
+- Bundled LVA docker-compose with custom "My Nano" openWakeWord wake word (`lva/`)
+- See [VOICE_CONTROL.md](./VOICE_CONTROL.md) for full setup guide
+
 ### Amazon Alexa Channel
 - New channel: Amazon Alexa Custom Skill integration via the nanobot gateway
 - Voice channel hint injection for faster, more concise LLM responses
