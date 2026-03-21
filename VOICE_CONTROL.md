@@ -211,10 +211,18 @@ Add to `~/.nanobot/config.json` under `channels`:
 
 ### Alexa Skill Setup
 
-1. Create a Custom Skill in the [Alexa Developer Console](https://developer.amazon.com/alexa/console/ask)
-2. Set the endpoint to your server's public URL (e.g. `https://your-domain:8443/alexa`)
-3. Create a `CatchAllIntent` with a slot named `utterance` of type `AMAZON.SearchQuery`
-4. The skill forwards all speech to nanobot and speaks back the response
+A deploy script and skill package are included in `alexa-skill/`. Install the [ASK CLI](https://developer.amazon.com/docs/smapi/quick-start-alexa-skills-kit-command-line-interface.html), then:
+
+```bash
+cd alexa-skill
+./deploy.sh https://your-domain.com          # en-GB by default
+./deploy.sh https://your-domain.com en-US     # different locale
+./deploy.sh https://your-domain.com en-GB my assistant  # custom invocation name
+```
+
+The script creates the skill, uploads the interaction model with ~150 carrier phrase samples, builds the language model, and enables testing on your account.
+
+See [`alexa-skill/README.md`](./alexa-skill/README.md) for full details.
 
 ### Limitations
 
