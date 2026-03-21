@@ -325,6 +325,7 @@ class ESPHomeChannel(BaseChannel):
     async def _satellite_loop(self, target: ESPHomeSatelliteTarget) -> None:
         """Maintain a persistent connection to a single ESPHome satellite."""
         from aioesphomeapi import APIClient, VoiceAssistantEventType
+        from aioesphomeapi.core import APIConnectionError
 
         while self._running:
             client: APIClient | None = None
@@ -505,6 +506,10 @@ class ESPHomeChannel(BaseChannel):
 
             except asyncio.CancelledError:
                 raise
+            except (OSError, ConnectionError, APIConnectionError) as exc:
+                logger.warning(
+                    "ESPHome: '{}' connection failed: {}", target.name, exc
+                )
             except Exception:
                 logger.exception(
                     "ESPHome: error in satellite loop for '{}'", target.name
