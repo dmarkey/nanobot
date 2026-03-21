@@ -748,7 +748,7 @@ class ESPHomeChannel(BaseChannel):
                 samples,
                 language=self.config.stt.language,
                 beam_size=5,
-                vad_filter=True,
+                vad_filter=False,
             )
             return " ".join(seg.text.strip() for seg in segments)
 
