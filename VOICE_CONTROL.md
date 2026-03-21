@@ -51,22 +51,20 @@ Both STT and TTS models are **downloaded automatically** on first startup. No ma
 
 ### Set Up a Satellite
 
-The easiest way is [linux-voice-assistant](https://github.com/OHF-Voice/linux-voice-assistant) via Docker:
+The easiest way is [linux-voice-assistant](https://github.com/OHF-Voice/linux-voice-assistant) via Docker. A pre-configured setup is included in the `lva/` directory of this repo with a custom wake word.
 
 ```bash
-mkdir lva && cd lva
-LVA_VERSION=$(curl -s https://api.github.com/repos/ohf-voice/linux-voice-assistant/releases/latest | jq -r .tag_name)
-curl -sLO "https://raw.githubusercontent.com/ohf-voice/linux-voice-assistant/refs/tags/$LVA_VERSION/docker-compose.yml"
-curl -sLO "https://raw.githubusercontent.com/ohf-voice/linux-voice-assistant/refs/tags/$LVA_VERSION/.env.example"
-cp .env.example .env
+cd lva
+cp .env.example .env   # create from upstream example, or write your own
 ```
 
 Edit `.env` to configure:
 
 ```bash
-# Wake word (options: okay_nabu, alexa, hey_jarvis, hey_mycroft,
-#   hey_luna, hey_home_assistant, okay_computer, choo_choo_homie)
-WAKE_MODEL="okay_computer"
+# Wake word — use the bundled custom model or a built-in one
+# Built-in options: okay_nabu, alexa, hey_jarvis, hey_mycroft,
+#   hey_luna, hey_home_assistant, okay_computer, choo_choo_homie
+WAKE_MODEL="My_Nano_20260318_235009"
 
 # Play a sound while the agent is thinking (recommended)
 ENABLE_THINKING_SOUND="1"
@@ -79,6 +77,16 @@ docker compose up -d
 ```
 
 The satellite listens on port 6053 by default.
+
+#### Custom Wake Words
+
+The `lva/custom_wakewords/` directory is mounted into the container at `/app/wakewords/custom`. To use a custom wake word:
+
+1. Train a model at [openWakeWord](https://openwakeword.com/) (small fee, ~$3)
+2. Place the `.tflite` model and its `.json` manifest in `lva/custom_wakewords/`
+3. Set `WAKE_MODEL` in `.env` to the model filename (without `.tflite`)
+
+The included `My_Nano` custom wake word is already set up and ready to use.
 
 ### Configure Nanobot
 
