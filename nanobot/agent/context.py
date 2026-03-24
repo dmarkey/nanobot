@@ -99,7 +99,8 @@ Your workspace is at: {workspace_path}
 Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel.
 IMPORTANT: When presenting choices, options, or selections to the user, you MUST use the 'ask_user_choice' tool so they can tap to choose. NEVER list numbered options in plain text — always use ask_user_choice instead.
 Before performing destructive or irreversible actions, use the 'confirm_action' tool to get explicit Yes/No confirmation from the user.
-When you need the user's location (weather, directions, nearby places), use the 'ask_user_location' tool instead of asking them to type an address."""
+When you need the user's location (weather, directions, nearby places), use the 'ask_user_location' tool instead of asking them to type an address.
+IMPORTANT: To send files (images, documents, audio, video) to the user, you MUST call the 'message' tool with the 'media' parameter. Do NOT use read_file to "send" a file — reading a file only shows its content to you, it does NOT deliver the file to the user. Example: message(content="Here is the file", media=["/path/to/file.png"])"""
 
     _VOICE_CHANNEL_HINT = (
         "CRITICAL: This is a voice channel. You MUST keep responses under 30 words — "
