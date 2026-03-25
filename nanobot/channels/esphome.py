@@ -128,13 +128,51 @@ class ESPHomeChannel(BaseChannel):
         self._tts_audio_store: dict[str, bytes] = {}  # id -> wav bytes
         self._http_runner: Any = None
         self._http_port = config.tts_port
-        # Thinking sound (pre-resampled 16kHz WAV)
-        self._thinking_sound: bytes = b""
+        # Media player key cache per satellite {name: key}
+        self._media_player_keys: dict[str, int] = {}
         # Thinking sound (pre-resampled 16kHz WAV)
         self._thinking_sound: bytes = b""
         _sound_path = Path(__file__).parent.parent / "resources" / "processing.wav"
         if _sound_path.exists():
             self._thinking_sound = _sound_path.read_bytes()
+
+    # ------------------------------------------------------------------
+    # Media player helpers
+    # ------------------------------------------------------------------
+
+    async def _get_media_player_key(self, client: Any, sat_name: str) -> int | None:
+        """Get the media player entity key, caching it per satellite."""
+        if sat_name in self._media_player_keys:
+            return self._media_player_keys[sat_name]
+        try:
+            from aioesphomeapi.model import MediaPlayerInfo
+            entities, _ = await client.list_entities_services()
+            for ent in entities:
+                if isinstance(ent, MediaPlayerInfo):
+                    self._media_player_keys[sat_name] = ent.key
+                    return ent.key
+        except Exception:
+            logger.debug("ESPHome: could not find media player on '{}'", sat_name)
+        return None
+
+    async def _play_via_media_player(
+        self, client: Any, url: str, wav_data: bytes, sat_name: str = "",
+    ) -> None:
+        """Play a WAV URL via media_player_command and wait for estimated duration."""
+        key = await self._get_media_player_key(client, sat_name)
+        if key is None:
+            logger.warning("ESPHome: no media player found on '{}'", sat_name)
+            return
+        logger.debug("ESPHome: playing via media player: {}", url)
+        client.media_player_command(key, media_url=url)
+        # Estimate duration from WAV data and wait
+        try:
+            wav_buf = io.BytesIO(wav_data)
+            with wave.open(wav_buf, "rb") as wf:
+                duration = wf.getnframes() / wf.getframerate()
+            await asyncio.sleep(duration + 0.5)  # extra buffer for decode/startup
+        except Exception:
+            await asyncio.sleep(3.0)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -380,17 +418,8 @@ class ESPHomeChannel(BaseChannel):
             # Let the firmware tear down and restart wake word
             await asyncio.sleep(1.0)
 
-            # Play via media player command (not announcement API — that crashes)
-            try:
-                from aioesphomeapi.model import MediaPlayerInfo
-                entities, _ = await client.list_entities_services()
-                for ent in entities:
-                    if isinstance(ent, MediaPlayerInfo):
-                        logger.debug("ESPHome: playing TTS via media player: {}", tts_url)
-                        client.media_player_command(ent.key, media_url=tts_url)
-                        break
-            except Exception:
-                logger.warning("ESPHome: media player TTS playback failed")
+            # Play via media player and wait for estimated duration
+            await self._play_via_media_player(client, tts_url, wav_data)
         else:
             self._serve_tts_url(client, wav_data)
 
@@ -728,8 +757,14 @@ class ESPHomeChannel(BaseChannel):
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_START, None
             )
 
-            # TODO: thinking sound disabled for ATOM Echo — needs custom firmware
-            # with SPEAKER flag to support API audio streaming during pipeline
+            # Play thinking sound (end pipeline first to release I2S bus)
+            if use_announcements and self._thinking_sound:
+                client.send_voice_assistant_event(
+                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None,
+                )
+                await asyncio.sleep(0.5)
+                thinking_url = self._make_tts_url(self._thinking_sound)
+                await self._play_via_media_player(client, thinking_url, self._thinking_sound, target.name)
 
             # Check for a deferred response from a previous timed-out request.
             deferred = self._deferred.pop(target.name, None)
