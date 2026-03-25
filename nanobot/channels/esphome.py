@@ -54,6 +54,7 @@ class ESPHomeSatelliteTarget(Base):
     port: int = 6053
     password: str = ""
     encryption_key: str = ""  # Noise PSK for encrypted connections
+    force_api_audio: bool = False  # Force API audio streaming even if not advertised
 
 
 class STTConfig(Base):
@@ -447,7 +448,7 @@ class ESPHomeChannel(BaseChannel):
                     nonlocal pipeline_active, speech_detected, last_speech_time
                     nonlocal vad_timeout_task, pipeline_start_time, use_api_audio
                     from aioesphomeapi import VoiceAssistantFeature
-                    use_api_audio = bool(flags & VoiceAssistantFeature.API_AUDIO)
+                    use_api_audio = target.force_api_audio or bool(flags & VoiceAssistantFeature.API_AUDIO)
                     audio_buffer.clear()
                     vad_buffer.clear()
                     pipeline_active = True
