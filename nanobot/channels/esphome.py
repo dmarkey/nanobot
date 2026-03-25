@@ -391,7 +391,7 @@ class ESPHomeChannel(BaseChannel):
         )
         return f"http://{self.config.host}:{self._http_port}/tts/{audio_id}.wav"
 
-    async def _deliver_tts(self, client: Any, wav_data: bytes, use_announcements: bool) -> None:
+    async def _deliver_tts(self, client: Any, wav_data: bytes, use_announcements: bool, sat_name: str = "") -> None:
         """Deliver TTS audio to the satellite using the appropriate method.
 
         URL mode (default): send TTS_END with URL — the satellite fetches and
@@ -399,9 +399,8 @@ class ESPHomeChannel(BaseChannel):
         play while the mic is active.
 
         Announcement mode: end the voice pipeline first (RUN_END), then play
-        via the announcement API.  The firmware stops the mic, plays the audio,
-        and restarts the mic.  Required for single-I2S-bus devices like the
-        ATOM Echo where the mic and speaker cannot run simultaneously.
+        via media_player_command.  The firmware's on_announcement handler stops
+        the mic, plays the audio, and on_idle restarts wake word.
         """
         tts_url = self._make_tts_url(wav_data)
 
@@ -419,7 +418,7 @@ class ESPHomeChannel(BaseChannel):
             await asyncio.sleep(1.0)
 
             # Play via media player and wait for estimated duration
-            await self._play_via_media_player(client, tts_url, wav_data)
+            await self._play_via_media_player(client, tts_url, wav_data, sat_name)
         else:
             self._serve_tts_url(client, wav_data)
 
@@ -483,6 +482,9 @@ class ESPHomeChannel(BaseChannel):
 
                 await client.connect(on_stop=_on_disconnect)
                 logger.info("ESPHome: connected to '{}'", target.name)
+
+                # Cache media player key for this satellite
+                await self._get_media_player_key(client, target.name)
 
                 # Per-satellite state
                 audio_buffer = bytearray()
@@ -733,7 +735,7 @@ class ESPHomeChannel(BaseChannel):
                 confirmation = "Done." if voice_command == "/stop" else "New conversation started."
                 wav_data = await self._tts_to_wav(confirmation)
                 if wav_data:
-                    await self._deliver_tts(client, wav_data, use_announcements)
+                    await self._deliver_tts(client, wav_data, use_announcements, target.name)
                 if not use_announcements:
                     client.send_voice_assistant_event(
                         VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
@@ -793,7 +795,7 @@ class ESPHomeChannel(BaseChannel):
                         )
                         interim_wav = await self._tts_to_wav(interim_text)
                         if interim_wav:
-                            await self._deliver_tts(client, interim_wav, use_announcements)
+                            await self._deliver_tts(client, interim_wav, use_announcements, target.name)
                         else:
                             client.send_voice_assistant_event(
                                 VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
@@ -847,7 +849,7 @@ class ESPHomeChannel(BaseChannel):
 
             wav_data = await self._tts_to_wav(response_text)
             if wav_data:
-                await self._deliver_tts(client, wav_data, use_announcements)
+                await self._deliver_tts(client, wav_data, use_announcements, target.name)
                 # Don't send RUN_END here — the satellite's _tts_finished()
                 # callback (fired when mpv completes playback) handles
                 # end-of-pipeline and continue_conversation correctly.
