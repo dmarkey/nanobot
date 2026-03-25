@@ -748,18 +748,8 @@ class ESPHomeChannel(BaseChannel):
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_START, None
             )
 
-            # Play thinking sound (end pipeline first to release I2S bus)
-            # Don't wait for it — let it play while agent processes.
-            # The TTS media_player_command will replace it via on_announcement.
-            if use_announcements and self._thinking_sound:
-                client.send_voice_assistant_event(
-                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None,
-                )
-                await asyncio.sleep(0.5)
-                thinking_url = self._make_tts_url(self._thinking_sound)
-                key = await self._get_media_player_key(client, target.name)
-                if key is not None:
-                    client.media_player_command(key, media_url=thinking_url)
+            # Thinking sound disabled for single-I2S-bus devices — causes
+            # timing issues with mic release and TTS playback.
 
             # Check for a deferred response from a previous timed-out request.
             deferred = self._deferred.pop(target.name, None)
