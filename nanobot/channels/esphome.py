@@ -335,32 +335,52 @@ class ESPHomeChannel(BaseChannel):
                 VoiceAssistantEventType.VOICE_ASSISTANT_TTS_STREAM_END, {},
             )
 
-    async def _deliver_tts(self, client: Any, wav_data: bytes, use_announcements: bool) -> None:
-        """Deliver TTS audio to the satellite using the appropriate method.
-
-        When use_announcements is True, the TTS URL is still sent via TTS_END
-        (as a fallback) and audio is also streamed directly via the API — this
-        is how Home Assistant handles devices with a SPEAKER flag.
-        """
-        # Always store the WAV for URL-based access
+    def _make_tts_url(self, wav_data: bytes) -> str:
+        """Store WAV data and return the URL to access it."""
         audio_id = uuid.uuid4().hex[:12]
         self._tts_audio_store[audio_id] = wav_data
         asyncio.get_running_loop().call_later(
             _TTS_STORE_TTL, self._tts_audio_store.pop, audio_id, None
         )
-        tts_url = f"http://{self.config.host}:{self._http_port}/tts/{audio_id}.wav"
+        return f"http://{self.config.host}:{self._http_port}/tts/{audio_id}.wav"
 
-        from aioesphomeapi import VoiceAssistantEventType
+    async def _deliver_tts(self, client: Any, wav_data: bytes, use_announcements: bool) -> None:
+        """Deliver TTS audio to the satellite using the appropriate method.
 
-        # Send TTS_END with URL (firmware uses this if no streaming follows)
-        client.send_voice_assistant_event(
-            VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END,
-            {"url": tts_url},
-        )
+        URL mode (default): send TTS_END with URL — the satellite fetches and
+        plays inline.  Works for linux-voice-assistant and devices that can
+        play while the mic is active.
+
+        Announcement mode: end the voice pipeline first (RUN_END), then play
+        via the announcement API.  The firmware stops the mic, plays the audio,
+        and restarts the mic.  Required for single-I2S-bus devices like the
+        ATOM Echo where the mic and speaker cannot run simultaneously.
+        """
+        tts_url = self._make_tts_url(wav_data)
 
         if use_announcements:
-            # Also stream audio directly — firmware will prefer this over the URL
-            await self._stream_tts_audio(client, wav_data)
+            from aioesphomeapi import VoiceAssistantEventType
+
+            # End the pipeline so firmware releases the I2S bus / mic
+            client.send_voice_assistant_event(
+                VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END, {},
+            )
+            client.send_voice_assistant_event(
+                VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None,
+            )
+            # Let the firmware tear down the pipeline
+            await asyncio.sleep(0.5)
+
+            # Play via announcement API (firmware handles mic stop → play → restart)
+            logger.debug("ESPHome: playing announcement: {}", tts_url)
+            try:
+                await client.send_voice_assistant_announcement_await_response(
+                    media_id=tts_url, timeout=60.0,
+                )
+            except Exception:
+                logger.warning("ESPHome: announcement playback failed or timed out")
+        else:
+            self._serve_tts_url(client, wav_data)
 
     @staticmethod
     def _download_piper_voice(model_name: str, dest_dir: Path) -> None:
@@ -671,9 +691,10 @@ class ESPHomeChannel(BaseChannel):
                 wav_data = await self._tts_to_wav(confirmation)
                 if wav_data:
                     await self._deliver_tts(client, wav_data, use_announcements)
-                client.send_voice_assistant_event(
-                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
-                )
+                if not use_announcements:
+                    client.send_voice_assistant_event(
+                        VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
+                    )
                 return
 
             # 2. Agent
