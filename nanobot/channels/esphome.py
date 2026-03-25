@@ -893,10 +893,24 @@ class ESPHomeChannel(BaseChannel):
         return await asyncio.get_running_loop().run_in_executor(None, _synthesize)
 
     async def _tts_to_wav(self, text: str) -> bytes:
-        """Synthesize text and return WAV bytes (or empty bytes on failure)."""
+        """Synthesize text and return WAV bytes at 16kHz for satellite playback."""
+        import numpy as np
+
         tts_audio, tts_rate = await self._do_tts(text)
         if not tts_audio:
             return b""
+
+        # Resample to 16kHz if needed — satellite speakers expect 16kHz
+        if tts_rate != _SAT_RATE:
+            samples = np.frombuffer(tts_audio, dtype=np.int16).astype(np.float32)
+            # Simple linear interpolation resample
+            duration = len(samples) / tts_rate
+            target_len = int(duration * _SAT_RATE)
+            indices = np.linspace(0, len(samples) - 1, target_len)
+            resampled = np.interp(indices, np.arange(len(samples)), samples)
+            tts_audio = resampled.astype(np.int16).tobytes()
+            tts_rate = _SAT_RATE
+
         wav_buf = io.BytesIO()
         with wave.open(wav_buf, "wb") as wf:
             wf.setnchannels(_SAT_CHANNELS)
