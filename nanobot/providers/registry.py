@@ -296,7 +296,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         detect_by_key_prefix="fw_",
         detect_by_base_keyword="fireworks",
         default_api_base="https://api.fireworks.ai/inference/v1",
-        supports_prompt_caching=True,
     ),
     # MiniMax: OpenAI-compatible API
     ProviderSpec(
