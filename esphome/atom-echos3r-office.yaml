@@ -1,0 +1,196 @@
+---
+# M5Stack ATOM Echo S3R — Office satellite for nanobot
+# Custom wake word: "My Nano"
+
+esphome:
+  name: atom-echos3r-office
+  friendly_name: Office S3R
+  min_version: 2025.5.0
+  on_boot:
+    priority: 600
+    then:
+      - media_player.volume_set:
+          id: echo_media_player
+          volume: 70%
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 8MB
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: DEBUG
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+
+captive_portal:
+
+button:
+  - platform: factory_reset
+    id: factory_reset_btn
+    internal: true
+
+# --- I2C for ES8311 codec ---
+i2c:
+  sda:
+    number: GPIO45
+    ignore_strapping_warning: true
+  scl:
+    number: GPIO0
+    ignore_strapping_warning: true
+  scan: false
+
+# --- I2S audio bus ---
+i2s_audio:
+  - id: i2s_audio_bus
+    i2s_lrclk_pin:
+      number: GPIO3
+      ignore_strapping_warning: true
+    i2s_bclk_pin: GPIO17
+    i2s_mclk_pin: GPIO11
+
+# --- ES8311 DAC ---
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    bits_per_sample: 16bit
+    sample_rate: 48000
+
+# --- Microphone ---
+microphone:
+  - platform: i2s_audio
+    id: echo_microphone
+    sample_rate: 16000
+    i2s_din_pin: GPIO4
+    bits_per_sample: 16bit
+    adc_type: external
+
+# --- Speaker ---
+speaker:
+  - platform: i2s_audio
+    id: echo_speaker
+    i2s_dout_pin: GPIO48
+    dac_type: external
+    sample_rate: 48000
+    bits_per_sample: 16bit
+    channel: left
+    audio_dac: es8311_dac
+
+# --- Speaker amplifier enable ---
+switch:
+  - platform: gpio
+    id: speaker_enable
+    pin: GPIO18
+    restore_mode: RESTORE_DEFAULT_ON
+    internal: true
+
+# --- Media player ---
+media_player:
+  - platform: speaker
+    name: None
+    id: echo_media_player
+    announcement_pipeline:
+      speaker: echo_speaker
+      format: FLAC
+      sample_rate: 48000
+      num_channels: 1
+    volume_min: 0.4
+    volume_max: 0.8
+    files:
+      - id: wake_word_sound
+        file: processing.wav
+    on_announcement:
+      - if:
+          condition:
+            - microphone.is_capturing:
+          then:
+            - micro_wake_word.stop:
+            - wait_until:
+                not:
+                  microphone.is_capturing:
+    on_idle:
+      - micro_wake_word.start:
+
+# --- Voice assistant ---
+voice_assistant:
+  id: va
+  microphone:
+    microphone: echo_microphone
+    channels: 0
+    gain_factor: 4
+  media_player: echo_media_player
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  on_listening:
+    - logger.log: "Listening..."
+  on_tts_start:
+    - logger.log: "TTS starting"
+  on_end:
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+        timeout: 0.5s
+    - wait_until:
+        - and:
+            - not:
+                voice_assistant.is_running:
+            - not:
+                speaker.is_playing:
+    - lambda: id(va).set_use_wake_word(false);
+    - micro_wake_word.start:
+  on_error:
+    - logger.log:
+        format: "Error: %s"
+        args: ['code.c_str()']
+    - delay: 2s
+  on_client_connected:
+    - delay: 2s
+    - lambda: id(va).set_use_wake_word(false);
+    - micro_wake_word.start:
+  on_client_disconnected:
+    - micro_wake_word.stop:
+
+# --- Button (GPIO41) ---
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO41
+      mode: INPUT_PULLUP
+      inverted: true
+    id: user_button
+    name: Button
+    on_multi_click:
+      - timing:
+          - ON for at least 50ms
+          - OFF for at least 50ms
+        then:
+          - micro_wake_word.start:
+      - timing:
+          - ON for at least 10s
+        then:
+          - button.press: factory_reset_btn
+
+# --- Wake word ---
+micro_wake_word:
+  on_wake_word_detected:
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+  vad:
+  models:
+    - model: my_nano.json
+      id: my_nano

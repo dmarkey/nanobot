@@ -1,0 +1,219 @@
+---
+# M5Stack ATOM Echo — Office satellite for nanobot
+# Custom wake word: "My Nano"
+# Based on: https://github.com/esphome/wake-word-voice-assistants/blob/main/m5stack-atom-echo/m5stack-atom-echo.yaml
+
+esphome:
+  name: m5stack-atom-echo
+  name_add_mac_suffix: true
+  friendly_name: M5Stack Atom Echo
+  min_version: 2025.5.0
+
+esp32:
+  board: m5stack-atom
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+
+logger:
+api:
+
+ota:
+  - platform: esphome
+    id: ota_esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+
+captive_portal:
+
+button:
+  - platform: factory_reset
+    id: factory_reset_btn
+    name: Factory reset
+
+i2s_audio:
+  - id: i2s_audio_bus
+    i2s_lrclk_pin: GPIO33
+    i2s_bclk_pin: GPIO19
+
+microphone:
+  - platform: i2s_audio
+    id: echo_microphone
+    i2s_din_pin: GPIO23
+    adc_type: external
+    pdm: true
+    sample_rate: 16000
+    correct_dc_offset: true
+
+speaker:
+  - platform: i2s_audio
+    id: echo_speaker
+    i2s_dout_pin: GPIO22
+    dac_type: external
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    channel: stereo
+    buffer_duration: 60ms
+
+media_player:
+  - platform: speaker
+    name: None
+    id: echo_media_player
+    announcement_pipeline:
+      speaker: echo_speaker
+      format: WAV
+    codec_support_enabled: false
+    buffer_size: 6000
+    volume_min: 0.4
+    on_announcement:
+      - micro_wake_word.stop:
+      - wait_until:
+          not:
+            microphone.is_capturing:
+      - light.turn_on:
+          id: led
+          blue: 100%
+          red: 0%
+          green: 0%
+          brightness: 100%
+          effect: none
+    on_idle:
+      - micro_wake_word.start:
+      - light.turn_on:
+          id: led
+          red: 100%
+          green: 89%
+          blue: 71%
+          brightness: 60%
+          effect: none
+
+voice_assistant:
+  id: va
+  microphone:
+    microphone: echo_microphone
+    channels: 0
+    gain_factor: 4
+  media_player: echo_media_player
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  on_listening:
+    - light.turn_on:
+        id: led
+        blue: 100%
+        red: 0%
+        green: 0%
+        effect: "Slow Pulse"
+  on_stt_vad_end:
+    - light.turn_on:
+        id: led
+        blue: 100%
+        red: 0%
+        green: 0%
+        effect: "Fast Pulse"
+  on_tts_start:
+    - light.turn_on:
+        id: led
+        blue: 100%
+        red: 0%
+        green: 0%
+        brightness: 100%
+        effect: none
+  on_end:
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+        timeout: 0.5s
+    - wait_until:
+        - and:
+            - not:
+                voice_assistant.is_running:
+            - not:
+                speaker.is_playing:
+    - lambda: id(va).set_use_wake_word(false);
+    - micro_wake_word.start:
+    - light.turn_on:
+        id: led
+        red: 100%
+        green: 89%
+        blue: 71%
+        brightness: 60%
+        effect: none
+  on_error:
+    - light.turn_on:
+        id: led
+        red: 100%
+        green: 0%
+        blue: 0%
+        brightness: 100%
+        effect: none
+    - delay: 2s
+    - light.turn_on:
+        id: led
+        red: 100%
+        green: 89%
+        blue: 71%
+        brightness: 60%
+        effect: none
+  on_client_connected:
+    - delay: 2s
+    - lambda: id(va).set_use_wake_word(false);
+    - micro_wake_word.start:
+  on_client_disconnected:
+    - micro_wake_word.stop:
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO39
+      inverted: true
+    name: Button
+    disabled_by_default: true
+    entity_category: diagnostic
+    id: echo_button
+    on_multi_click:
+      - timing:
+          - ON for at least 50ms
+          - OFF for at least 50ms
+        then:
+          - micro_wake_word.start:
+      - timing:
+          - ON for at least 10s
+        then:
+          - button.press: factory_reset_btn
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: led
+    name: None
+    disabled_by_default: true
+    entity_category: config
+    pin: GPIO27
+    default_transition_length: 0s
+    chipset: SK6812
+    num_leds: 1
+    rgb_order: grb
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 250ms
+          update_interval: 250ms
+          min_brightness: 50%
+          max_brightness: 100%
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 100ms
+          update_interval: 100ms
+          min_brightness: 50%
+          max_brightness: 100%
+
+micro_wake_word:
+  on_wake_word_detected:
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+  vad:
+  models:
+    - model: my_nano.json
+      id: my_nano
