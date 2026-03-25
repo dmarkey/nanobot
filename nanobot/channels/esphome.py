@@ -291,6 +291,36 @@ class ESPHomeChannel(BaseChannel):
             {"url": tts_url},
         )
 
+    def _stream_tts_audio(self, client: Any, wav_data: bytes) -> None:
+        """Stream TTS audio directly to the satellite via the API connection.
+
+        Used for hardware satellites (e.g. ATOM Echo) that share a single I2S
+        bus between mic and speaker — the ESPHome firmware handles bus switching
+        when it receives audio over the API, but cannot fetch from a URL while
+        the mic is active.
+        """
+        from aioesphomeapi import VoiceAssistantEventType
+
+        # Strip WAV header (44 bytes) to get raw PCM
+        pcm_data = wav_data[44:] if len(wav_data) > 44 else wav_data
+
+        # Send in chunks — ESPHome expects small frames
+        chunk_size = 1024
+        for i in range(0, len(pcm_data), chunk_size):
+            client.send_voice_assistant_audio(pcm_data[i : i + chunk_size])
+
+        # Signal end of audio stream
+        client.send_voice_assistant_event(
+            VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END, {},
+        )
+
+    def _deliver_tts(self, client: Any, wav_data: bytes, use_api_audio: bool) -> None:
+        """Deliver TTS audio to the satellite using the appropriate method."""
+        if use_api_audio:
+            self._stream_tts_audio(client, wav_data)
+        else:
+            self._serve_tts_url(client, wav_data)
+
     @staticmethod
     def _download_piper_voice(model_name: str, dest_dir: Path) -> None:
         """Download a piper voice model from HuggingFace."""
@@ -359,6 +389,7 @@ class ESPHomeChannel(BaseChannel):
                 speech_detected = False
                 pipeline_start_time = 0.0
                 last_speech_time = 0.0
+                use_api_audio = False  # True when satellite supports API audio streaming
 
                 async def _vad_silence_monitor() -> None:
                     """Monitor for silence after speech, or no speech / max recording."""
@@ -414,7 +445,9 @@ class ESPHomeChannel(BaseChannel):
                     wake_word_phrase: str | None,
                 ) -> int:
                     nonlocal pipeline_active, speech_detected, last_speech_time
-                    nonlocal vad_timeout_task, pipeline_start_time
+                    nonlocal vad_timeout_task, pipeline_start_time, use_api_audio
+                    from aioesphomeapi import VoiceAssistantFeature
+                    use_api_audio = bool(flags & VoiceAssistantFeature.API_AUDIO)
                     audio_buffer.clear()
                     vad_buffer.clear()
                     pipeline_active = True
@@ -422,9 +455,9 @@ class ESPHomeChannel(BaseChannel):
                     last_speech_time = 0.0
                     pipeline_start_time = time.monotonic()
                     logger.info(
-                        "ESPHome: pipeline started on '{}' (wake: {}, flags={}, continued={})",
+                        "ESPHome: pipeline started on '{}' (wake: {}, flags={}, continued={}, api_audio={})",
                         target.name, wake_word_phrase or "none", flags,
-                        wake_word_phrase is None,
+                        wake_word_phrase is None, use_api_audio,
                     )
                     client.send_voice_assistant_event(
                         VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START, None
@@ -460,7 +493,7 @@ class ESPHomeChannel(BaseChannel):
                         len(audio) / (_SAT_RATE * _SAT_WIDTH), target.name,
                     )
                     pipeline_task = asyncio.create_task(
-                        self._run_pipeline(target, client, audio)
+                        self._run_pipeline(target, client, audio, use_api_audio)
                     )
 
                 async def handle_audio(data: bytes) -> None:
@@ -553,6 +586,7 @@ class ESPHomeChannel(BaseChannel):
         target: ESPHomeSatelliteTarget,
         client: Any,
         audio: bytes,
+        use_api_audio: bool = False,
     ) -> None:
         """Run the full voice pipeline for one utterance."""
         from aioesphomeapi import VoiceAssistantEventType
@@ -595,7 +629,7 @@ class ESPHomeChannel(BaseChannel):
                 confirmation = "Done." if voice_command == "/stop" else "New conversation started."
                 wav_data = await self._tts_to_wav(confirmation)
                 if wav_data:
-                    self._serve_tts_url(client, wav_data)
+                    self._deliver_tts(client, wav_data, use_api_audio)
                 client.send_voice_assistant_event(
                     VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
                 )
@@ -645,7 +679,7 @@ class ESPHomeChannel(BaseChannel):
                         )
                         interim_wav = await self._tts_to_wav(interim_text)
                         if interim_wav:
-                            self._serve_tts_url(client, interim_wav)
+                            self._deliver_tts(client, interim_wav, use_api_audio)
                         else:
                             client.send_voice_assistant_event(
                                 VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
@@ -699,7 +733,7 @@ class ESPHomeChannel(BaseChannel):
 
             wav_data = await self._tts_to_wav(response_text)
             if wav_data:
-                self._serve_tts_url(client, wav_data)
+                self._deliver_tts(client, wav_data, use_api_audio)
                 # Don't send RUN_END here — the satellite's _tts_finished()
                 # callback (fired when mpv completes playback) handles
                 # end-of-pipeline and continue_conversation correctly.
