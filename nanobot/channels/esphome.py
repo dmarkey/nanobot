@@ -292,33 +292,45 @@ class ESPHomeChannel(BaseChannel):
             {"url": tts_url},
         )
 
-    def _stream_tts_audio(self, client: Any, wav_data: bytes) -> None:
-        """Stream TTS audio directly to the satellite via the API connection.
+    async def _announce_tts(self, client: Any, wav_data: bytes) -> None:
+        """End the voice pipeline and play TTS via the announcement API.
 
         Used for hardware satellites (e.g. ATOM Echo) that share a single I2S
-        bus between mic and speaker — the ESPHome firmware handles bus switching
-        when it receives audio over the API, but cannot fetch from a URL while
-        the mic is active.
+        bus between mic and speaker.  The announcement API stops the mic before
+        playback, avoiding the bus conflict that occurs when the pipeline tries
+        to fetch a URL while the mic is still active.
         """
         from aioesphomeapi import VoiceAssistantEventType
 
-        # Strip WAV header (44 bytes) to get raw PCM
-        pcm_data = wav_data[44:] if len(wav_data) > 44 else wav_data
-
-        # Send in chunks — ESPHome expects small frames
-        chunk_size = 1024
-        for i in range(0, len(pcm_data), chunk_size):
-            client.send_voice_assistant_audio(pcm_data[i : i + chunk_size])
-
-        # Signal end of audio stream
+        # End the current voice pipeline so the firmware releases the mic/I2S bus
         client.send_voice_assistant_event(
             VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END, {},
         )
+        client.send_voice_assistant_event(
+            VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None,
+        )
+        # Small delay to let the firmware tear down the pipeline
+        await asyncio.sleep(0.3)
 
-    def _deliver_tts(self, client: Any, wav_data: bytes, use_api_audio: bool) -> None:
+        # Store the WAV and play it as an announcement
+        audio_id = uuid.uuid4().hex[:12]
+        self._tts_audio_store[audio_id] = wav_data
+        asyncio.get_running_loop().call_later(
+            _TTS_STORE_TTL, self._tts_audio_store.pop, audio_id, None
+        )
+        tts_url = f"http://{self.config.host}:{self._http_port}/tts/{audio_id}.wav"
+        logger.debug("ESPHome: playing announcement via URL: {}", tts_url)
+        try:
+            await client.send_voice_assistant_announcement_await_response(
+                media_id=tts_url, timeout=30.0,
+            )
+        except Exception:
+            logger.warning("ESPHome: announcement playback failed or timed out")
+
+    async def _deliver_tts(self, client: Any, wav_data: bytes, use_api_audio: bool) -> None:
         """Deliver TTS audio to the satellite using the appropriate method."""
         if use_api_audio:
-            self._stream_tts_audio(client, wav_data)
+            await self._announce_tts(client, wav_data)
         else:
             self._serve_tts_url(client, wav_data)
 
@@ -630,10 +642,12 @@ class ESPHomeChannel(BaseChannel):
                 confirmation = "Done." if voice_command == "/stop" else "New conversation started."
                 wav_data = await self._tts_to_wav(confirmation)
                 if wav_data:
-                    self._deliver_tts(client, wav_data, use_api_audio)
-                client.send_voice_assistant_event(
-                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
-                )
+                    await self._deliver_tts(client, wav_data, use_api_audio)
+                if not use_api_audio:
+                    # announce path already sent RUN_END
+                    client.send_voice_assistant_event(
+                        VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
+                    )
                 return
 
             # 2. Agent
@@ -680,7 +694,7 @@ class ESPHomeChannel(BaseChannel):
                         )
                         interim_wav = await self._tts_to_wav(interim_text)
                         if interim_wav:
-                            self._deliver_tts(client, interim_wav, use_api_audio)
+                            await self._deliver_tts(client, interim_wav, use_api_audio)
                         else:
                             client.send_voice_assistant_event(
                                 VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
@@ -734,7 +748,7 @@ class ESPHomeChannel(BaseChannel):
 
             wav_data = await self._tts_to_wav(response_text)
             if wav_data:
-                self._deliver_tts(client, wav_data, use_api_audio)
+                await self._deliver_tts(client, wav_data, use_api_audio)
                 # Don't send RUN_END here — the satellite's _tts_finished()
                 # callback (fired when mpv completes playback) handles
                 # end-of-pipeline and continue_conversation correctly.
