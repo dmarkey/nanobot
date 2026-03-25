@@ -128,6 +128,16 @@ class ESPHomeChannel(BaseChannel):
         self._tts_audio_store: dict[str, bytes] = {}  # id -> wav bytes
         self._http_runner: Any = None
         self._http_port = config.tts_port
+        # Thinking sound (pre-resampled 16kHz WAV)
+        self._thinking_sound: bytes = b""
+        _sound_path = Path(__file__).parent.parent / "resources" / "processing.wav"
+        if _sound_path.exists():
+            self._thinking_sound = _sound_path.read_bytes()
+        # Pre-load thinking sound (resampled to 16kHz)
+        self._thinking_sound: bytes = self._load_thinking_sound()
+        # Pre-generated feedback sounds (16kHz 16-bit mono WAV)
+        self._thinking_sound: bytes = self._generate_thinking_sound()
+        self._wakeup_sound: bytes = self._generate_wakeup_sound()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -717,6 +727,21 @@ class ESPHomeChannel(BaseChannel):
             client.send_voice_assistant_event(
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_START, None
             )
+
+            # Play thinking sound while agent processes (announcement mode only)
+            if use_announcements and self._thinking_sound:
+                # End pipeline to release I2S bus, play sound, then continue
+                client.send_voice_assistant_event(
+                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None,
+                )
+                await asyncio.sleep(0.5)
+                tts_url = self._make_tts_url(self._thinking_sound)
+                try:
+                    await client.send_voice_assistant_announcement_await_response(
+                        media_id=tts_url, timeout=10.0,
+                    )
+                except Exception:
+                    pass
 
             # Check for a deferred response from a previous timed-out request.
             deferred = self._deferred.pop(target.name, None)
