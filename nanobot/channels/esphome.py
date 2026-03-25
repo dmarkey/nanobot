@@ -54,7 +54,10 @@ class ESPHomeSatelliteTarget(Base):
     port: int = 6053
     password: str = ""
     encryption_key: str = ""  # Noise PSK for encrypted connections
-    use_announcements: bool = False  # Stream TTS audio directly to the device (for hardware satellites with speakers)
+    use_announcements: bool = False  # End pipeline and play TTS via announcement API (for single-I2S-bus devices)
+    speech_threshold: float | None = None  # VAD probability threshold (overrides global)
+    silence_timeout_seconds: float | None = None  # Silence after speech to trigger STT (overrides global)
+    volume_multiplier: float | None = None  # TTS volume multiplier (overrides global default of 1.0)
 
 
 class STTConfig(Base):
@@ -480,17 +483,18 @@ class ESPHomeChannel(BaseChannel):
                             return
 
                         # Silence after speech — user finished talking
+                        _sat_silence = target.silence_timeout_seconds if target.silence_timeout_seconds is not None else self.config.silence_timeout_seconds
                         if (
                             speech_detected
                             and last_speech_time > 0
                             and (time.monotonic() - last_speech_time)
-                            > self.config.silence_timeout_seconds
+                            > _sat_silence
                         ):
                             logger.info(
                                 "ESPHome: VAD silence timeout on '{}' "
                                 "({:.1f}s), ending audio",
                                 target.name,
-                                self.config.silence_timeout_seconds,
+                                _sat_silence,
                             )
                             client.send_voice_assistant_event(
                                 VoiceAssistantEventType.VOICE_ASSISTANT_STT_VAD_END,
@@ -574,7 +578,8 @@ class ESPHomeChannel(BaseChannel):
                             continue
 
                         prob = self._run_vad(frame)
-                        if prob >= self.config.speech_threshold:
+                        _sat_threshold = target.speech_threshold if target.speech_threshold is not None else self.config.speech_threshold
+                        if prob >= _sat_threshold:
                             if not speech_detected:
                                 speech_detected = True
                                 logger.info(
@@ -688,7 +693,7 @@ class ESPHomeChannel(BaseChannel):
                     metadata={"esphome_satellite": target.name},
                 )
                 confirmation = "Done." if voice_command == "/stop" else "New conversation started."
-                wav_data = await self._tts_to_wav(confirmation)
+                wav_data = await self._tts_to_wav(confirmation, target.volume_multiplier or 1.0)
                 if wav_data:
                     await self._deliver_tts(client, wav_data, use_announcements)
                 if not use_announcements:
@@ -739,7 +744,7 @@ class ESPHomeChannel(BaseChannel):
                             VoiceAssistantEventType.VOICE_ASSISTANT_TTS_START,
                             {"text": interim_text},
                         )
-                        interim_wav = await self._tts_to_wav(interim_text)
+                        interim_wav = await self._tts_to_wav(interim_text, target.volume_multiplier or 1.0)
                         if interim_wav:
                             await self._deliver_tts(client, interim_wav, use_announcements)
                         else:
@@ -793,7 +798,7 @@ class ESPHomeChannel(BaseChannel):
                 {"text": response_text},
             )
 
-            wav_data = await self._tts_to_wav(response_text)
+            wav_data = await self._tts_to_wav(response_text, target.volume_multiplier or 1.0)
             if wav_data:
                 await self._deliver_tts(client, wav_data, use_announcements)
                 # Don't send RUN_END here — the satellite's _tts_finished()
@@ -888,11 +893,17 @@ class ESPHomeChannel(BaseChannel):
 
         return await asyncio.get_running_loop().run_in_executor(None, _synthesize)
 
-    async def _tts_to_wav(self, text: str) -> bytes:
+    async def _tts_to_wav(self, text: str, volume_multiplier: float = 1.0) -> bytes:
         """Synthesize text and return WAV bytes (or empty bytes on failure)."""
+        import numpy as np
+
         tts_audio, tts_rate = await self._do_tts(text)
         if not tts_audio:
             return b""
+        if volume_multiplier != 1.0:
+            samples = np.frombuffer(tts_audio, dtype=np.int16).astype(np.float32)
+            samples = np.clip(samples * volume_multiplier, -32768, 32767).astype(np.int16)
+            tts_audio = samples.tobytes()
         wav_buf = io.BytesIO()
         with wave.open(wav_buf, "wb") as wf:
             wf.setnchannels(_SAT_CHANNELS)
