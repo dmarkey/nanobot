@@ -57,7 +57,6 @@ class ESPHomeSatelliteTarget(Base):
     use_announcements: bool = False  # End pipeline and play TTS via announcement API (for single-I2S-bus devices)
     speech_threshold: float | None = None  # VAD probability threshold (overrides global)
     silence_timeout_seconds: float | None = None  # Silence after speech to trigger STT (overrides global)
-    volume_multiplier: float | None = None  # TTS volume multiplier (overrides global default of 1.0)
 
 
 class STTConfig(Base):
@@ -693,7 +692,7 @@ class ESPHomeChannel(BaseChannel):
                     metadata={"esphome_satellite": target.name},
                 )
                 confirmation = "Done." if voice_command == "/stop" else "New conversation started."
-                wav_data = await self._tts_to_wav(confirmation, target.volume_multiplier or 1.0)
+                wav_data = await self._tts_to_wav(confirmation)
                 if wav_data:
                     await self._deliver_tts(client, wav_data, use_announcements)
                 if not use_announcements:
@@ -744,7 +743,7 @@ class ESPHomeChannel(BaseChannel):
                             VoiceAssistantEventType.VOICE_ASSISTANT_TTS_START,
                             {"text": interim_text},
                         )
-                        interim_wav = await self._tts_to_wav(interim_text, target.volume_multiplier or 1.0)
+                        interim_wav = await self._tts_to_wav(interim_text)
                         if interim_wav:
                             await self._deliver_tts(client, interim_wav, use_announcements)
                         else:
@@ -798,7 +797,7 @@ class ESPHomeChannel(BaseChannel):
                 {"text": response_text},
             )
 
-            wav_data = await self._tts_to_wav(response_text, target.volume_multiplier or 1.0)
+            wav_data = await self._tts_to_wav(response_text)
             if wav_data:
                 await self._deliver_tts(client, wav_data, use_announcements)
                 # Don't send RUN_END here — the satellite's _tts_finished()
@@ -893,17 +892,11 @@ class ESPHomeChannel(BaseChannel):
 
         return await asyncio.get_running_loop().run_in_executor(None, _synthesize)
 
-    async def _tts_to_wav(self, text: str, volume_multiplier: float = 1.0) -> bytes:
+    async def _tts_to_wav(self, text: str) -> bytes:
         """Synthesize text and return WAV bytes (or empty bytes on failure)."""
-        import numpy as np
-
         tts_audio, tts_rate = await self._do_tts(text)
         if not tts_audio:
             return b""
-        if volume_multiplier != 1.0:
-            samples = np.frombuffer(tts_audio, dtype=np.int16).astype(np.float32)
-            samples = np.clip(samples * volume_multiplier, -32768, 32767).astype(np.int16)
-            tts_audio = samples.tobytes()
         wav_buf = io.BytesIO()
         with wave.open(wav_buf, "wb") as wf:
             wf.setnchannels(_SAT_CHANNELS)
