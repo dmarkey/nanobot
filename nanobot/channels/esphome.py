@@ -408,16 +408,17 @@ class ESPHomeChannel(BaseChannel):
             from aioesphomeapi import VoiceAssistantEventType
 
             # End the pipeline so firmware releases the I2S bus / mic
+            # (may already be ended by thinking sound — duplicates are harmless)
             client.send_voice_assistant_event(
                 VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END, {},
             )
             client.send_voice_assistant_event(
                 VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None,
             )
-            # Let the firmware tear down and restart wake word
-            await asyncio.sleep(1.0)
-
-            # Play via media player and wait for estimated duration
+            # Wait briefly then play — if thinking sound is still playing,
+            # on_announcement will handle mic stop; if it finished, on_idle
+            # restarted mic but on_announcement from TTS will stop it again
+            await asyncio.sleep(0.3)
             await self._play_via_media_player(client, tts_url, wav_data, sat_name)
         else:
             self._serve_tts_url(client, wav_data)
@@ -748,13 +749,17 @@ class ESPHomeChannel(BaseChannel):
             )
 
             # Play thinking sound (end pipeline first to release I2S bus)
+            # Don't wait for it — let it play while agent processes.
+            # The TTS media_player_command will replace it via on_announcement.
             if use_announcements and self._thinking_sound:
                 client.send_voice_assistant_event(
                     VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None,
                 )
                 await asyncio.sleep(0.5)
                 thinking_url = self._make_tts_url(self._thinking_sound)
-                await self._play_via_media_player(client, thinking_url, self._thinking_sound, target.name)
+                key = await self._get_media_player_key(client, target.name)
+                if key is not None:
+                    client.media_player_command(key, media_url=thinking_url)
 
             # Check for a deferred response from a previous timed-out request.
             deferred = self._deferred.pop(target.name, None)
