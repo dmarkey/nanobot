@@ -377,18 +377,20 @@ class ESPHomeChannel(BaseChannel):
             client.send_voice_assistant_event(
                 VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None,
             )
-            # Let the firmware tear down the pipeline
-            await asyncio.sleep(0.5)
+            # Let the firmware tear down and restart wake word
+            await asyncio.sleep(1.0)
 
-            # Play via announcement API (firmware handles mic stop → play → restart)
-            logger.debug("ESPHome: playing announcement: {}", tts_url)
+            # Play via media player command (not announcement API — that crashes)
             try:
-                await client.send_voice_assistant_announcement_await_response(
-                    media_id=tts_url, timeout=60.0,
-                    start_conversation=True,
-                )
+                from aioesphomeapi.model import MediaPlayerInfo
+                entities, _ = await client.list_entities_services()
+                for ent in entities:
+                    if isinstance(ent, MediaPlayerInfo):
+                        logger.debug("ESPHome: playing TTS via media player: {}", tts_url)
+                        client.media_player_command(ent.key, media_url=tts_url)
+                        break
             except Exception:
-                logger.warning("ESPHome: announcement playback failed or timed out")
+                logger.warning("ESPHome: media player TTS playback failed")
         else:
             self._serve_tts_url(client, wav_data)
 
@@ -726,20 +728,8 @@ class ESPHomeChannel(BaseChannel):
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_START, None
             )
 
-            # Play thinking sound while agent processes (announcement mode only)
-            if use_announcements and self._thinking_sound:
-                # End pipeline to release I2S bus, play sound, then continue
-                client.send_voice_assistant_event(
-                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None,
-                )
-                await asyncio.sleep(0.5)
-                tts_url = self._make_tts_url(self._thinking_sound)
-                try:
-                    await client.send_voice_assistant_announcement_await_response(
-                        media_id=tts_url, timeout=10.0,
-                    )
-                except Exception:
-                    pass
+            # TODO: thinking sound disabled for ATOM Echo — needs custom firmware
+            # with SPEAKER flag to support API audio streaming during pipeline
 
             # Check for a deferred response from a previous timed-out request.
             deferred = self._deferred.pop(target.name, None)
