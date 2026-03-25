@@ -130,14 +130,11 @@ class ESPHomeChannel(BaseChannel):
         self._http_port = config.tts_port
         # Thinking sound (pre-resampled 16kHz WAV)
         self._thinking_sound: bytes = b""
+        # Thinking sound (pre-resampled 16kHz WAV)
+        self._thinking_sound: bytes = b""
         _sound_path = Path(__file__).parent.parent / "resources" / "processing.wav"
         if _sound_path.exists():
             self._thinking_sound = _sound_path.read_bytes()
-        # Pre-load thinking sound (resampled to 16kHz)
-        self._thinking_sound: bytes = self._load_thinking_sound()
-        # Pre-generated feedback sounds (16kHz 16-bit mono WAV)
-        self._thinking_sound: bytes = self._generate_thinking_sound()
-        self._wakeup_sound: bytes = self._generate_wakeup_sound()
 
     # ------------------------------------------------------------------
     # Lifecycle
