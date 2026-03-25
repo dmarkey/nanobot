@@ -385,6 +385,7 @@ class ESPHomeChannel(BaseChannel):
             try:
                 await client.send_voice_assistant_announcement_await_response(
                     media_id=tts_url, timeout=60.0,
+                    start_conversation=True,
                 )
             except Exception:
                 logger.warning("ESPHome: announcement playback failed or timed out")
