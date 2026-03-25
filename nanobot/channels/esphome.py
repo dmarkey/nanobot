@@ -484,14 +484,8 @@ class ESPHomeChannel(BaseChannel):
                 await client.connect(on_stop=_on_disconnect)
                 logger.info("ESPHome: connected to '{}'", target.name)
 
-                # Cache media player key and set volume to max
-                key = await self._get_media_player_key(client, target.name)
-                if key is not None:
-                    try:
-                        client.media_player_command(key, volume=1.0)
-                        logger.info("ESPHome: set volume to 1.0 on '{}'", target.name)
-                    except Exception:
-                        pass
+                # Cache media player key for this satellite
+                await self._get_media_player_key(client, target.name)
 
                 # Per-satellite state
                 audio_buffer = bytearray()
