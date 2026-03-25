@@ -484,18 +484,6 @@ class ESPHomeChannel(BaseChannel):
                 await client.connect(on_stop=_on_disconnect)
                 logger.info("ESPHome: connected to '{}'", target.name)
 
-                # Set media player volume to max
-                try:
-                    from aioesphomeapi.model import MediaPlayerInfo
-                    entities, _ = await client.list_entities_services()
-                    for ent in entities:
-                        if isinstance(ent, MediaPlayerInfo):
-                            client.media_player_command(ent.key, volume=1.0)
-                            logger.info("ESPHome: set volume to 1.0 on '{}'", target.name)
-                            break
-                except Exception:
-                    logger.debug("ESPHome: could not set volume on '{}'", target.name)
-
                 # Per-satellite state
                 audio_buffer = bytearray()
                 vad_buffer = bytearray()
