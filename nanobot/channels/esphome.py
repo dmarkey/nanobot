@@ -761,8 +761,12 @@ class ESPHomeChannel(BaseChannel):
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_START, None
             )
 
-            # Thinking sound disabled for single-I2S-bus devices — causes
-            # timing issues with mic release and TTS playback.
+            # Play thinking sound after STT (mic is released at this point)
+            if self._thinking_sound:
+                thinking_url = self._make_tts_url(self._thinking_sound)
+                key = await self._get_media_player_key(client, target.name)
+                if key is not None:
+                    client.media_player_command(key, media_url=thinking_url)
 
             # Check for a deferred response from a previous timed-out request.
             deferred = self._deferred.pop(target.name, None)
