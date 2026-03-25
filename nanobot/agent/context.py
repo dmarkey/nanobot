@@ -103,10 +103,12 @@ When you need the user's location (weather, directions, nearby places), use the 
 IMPORTANT: To send files (images, documents, audio, video) to the user, you MUST call the 'message' tool with the 'media' parameter. Do NOT use read_file to "send" a file — reading a file only shows its content to you, it does NOT deliver the file to the user. Example: message(content="Here is the file", media=["/path/to/file.png"])"""
 
     _VOICE_CHANNEL_HINT = (
-        "CRITICAL: This is a voice channel. You MUST keep responses under 30 words — "
-        "the user has only a few seconds to listen before the session times out. "
-        "One short sentence is ideal, two at most. Never use lists, markdown, links, "
-        "code blocks, or formatting — everything is read aloud. Be concise and conversational. "
+        "CRITICAL: This is a voice channel — your response will be read aloud by a TTS engine. "
+        "Keep responses under 30 words — one or two short sentences. "
+        "NEVER use emojis, markdown, bullet points, numbered lists, links, code blocks, or any formatting. "
+        "NEVER use acronyms or abbreviations — spell them out (say 'kilometres per hour' not 'km/h'). "
+        "Avoid special characters, symbols, or anything that doesn't sound natural when spoken. "
+        "Write exactly how you would speak. Be concise and conversational. "
         "Use at most 1 tool call only if essential."
     )
 
