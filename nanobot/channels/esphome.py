@@ -128,8 +128,9 @@ class ESPHomeChannel(BaseChannel):
         self._tts_audio_store: dict[str, bytes] = {}  # id -> wav bytes
         self._http_runner: Any = None
         self._http_port = config.tts_port
-        # Media player key cache per satellite {name: key}
+        # Media player key and audio format cache per satellite
         self._media_player_keys: dict[str, int] = {}
+        self._satellite_sample_rates: dict[str, int] = {}  # {name: sample_rate}
         # Thinking sound (pre-resampled 16kHz WAV)
         self._thinking_sound: bytes = b""
         _sound_path = Path(__file__).parent.parent / "resources" / "processing.wav"
@@ -141,15 +142,24 @@ class ESPHomeChannel(BaseChannel):
     # ------------------------------------------------------------------
 
     async def _get_media_player_key(self, client: Any, sat_name: str) -> int | None:
-        """Get the media player entity key, caching it per satellite."""
+        """Get the media player entity key, caching it and the audio format per satellite."""
         if sat_name in self._media_player_keys:
             return self._media_player_keys[sat_name]
         try:
-            from aioesphomeapi.model import MediaPlayerInfo
+            from aioesphomeapi.model import MediaPlayerInfo, MediaPlayerFormatPurpose
             entities, _ = await client.list_entities_services()
             for ent in entities:
                 if isinstance(ent, MediaPlayerInfo):
                     self._media_player_keys[sat_name] = ent.key
+                    # Cache the announcement sample rate
+                    for fmt in ent.supported_formats:
+                        if fmt.purpose == MediaPlayerFormatPurpose.ANNOUNCEMENT and fmt.sample_rate:
+                            self._satellite_sample_rates[sat_name] = fmt.sample_rate
+                            logger.info(
+                                "ESPHome: '{}' announcement format: {} {}Hz {}ch",
+                                sat_name, fmt.format, fmt.sample_rate, fmt.num_channels,
+                            )
+                            break
                     return ent.key
         except Exception:
             logger.debug("ESPHome: could not find media player on '{}'", sat_name)
@@ -698,6 +708,9 @@ class ESPHomeChannel(BaseChannel):
         """Run the full voice pipeline for one utterance."""
         from aioesphomeapi import VoiceAssistantEventType
 
+        # Get the satellite's preferred sample rate (0 = use native TTS rate)
+        tts_rate = self._satellite_sample_rates.get(target.name, 0)
+
         try:
             # 1. STT
             client.send_voice_assistant_event(
@@ -734,7 +747,7 @@ class ESPHomeChannel(BaseChannel):
                     metadata={"esphome_satellite": target.name},
                 )
                 confirmation = "Done." if voice_command == "/stop" else "New conversation started."
-                wav_data = await self._tts_to_wav(confirmation)
+                wav_data = await self._tts_to_wav(confirmation, tts_rate)
                 if wav_data:
                     await self._deliver_tts(client, wav_data, use_announcements, target.name)
                 if not use_announcements:
@@ -788,7 +801,7 @@ class ESPHomeChannel(BaseChannel):
                             VoiceAssistantEventType.VOICE_ASSISTANT_TTS_START,
                             {"text": interim_text},
                         )
-                        interim_wav = await self._tts_to_wav(interim_text)
+                        interim_wav = await self._tts_to_wav(interim_text, tts_rate)
                         if interim_wav:
                             await self._deliver_tts(client, interim_wav, use_announcements, target.name)
                         else:
@@ -842,7 +855,7 @@ class ESPHomeChannel(BaseChannel):
                 {"text": response_text},
             )
 
-            wav_data = await self._tts_to_wav(response_text)
+            wav_data = await self._tts_to_wav(response_text, tts_rate)
             if wav_data:
                 await self._deliver_tts(client, wav_data, use_announcements, target.name)
                 # Don't send RUN_END here — the satellite's _tts_finished()
@@ -937,24 +950,23 @@ class ESPHomeChannel(BaseChannel):
 
         return await asyncio.get_running_loop().run_in_executor(None, _synthesize)
 
-    async def _tts_to_wav(self, text: str) -> bytes:
-        """Synthesize text and return WAV bytes at 16kHz for satellite playback."""
+    async def _tts_to_wav(self, text: str, target_rate: int = 0) -> bytes:
+        """Synthesize text and return WAV bytes, resampled to target_rate if set."""
         import numpy as np
 
         tts_audio, tts_rate = await self._do_tts(text)
         if not tts_audio:
             return b""
 
-        # Resample to 16kHz if needed — satellite speakers expect 16kHz
-        if tts_rate != _SAT_RATE:
+        # Resample if target rate specified and different from TTS output
+        if target_rate and tts_rate != target_rate:
             samples = np.frombuffer(tts_audio, dtype=np.int16).astype(np.float32)
-            # Simple linear interpolation resample
             duration = len(samples) / tts_rate
-            target_len = int(duration * _SAT_RATE)
+            target_len = int(duration * target_rate)
             indices = np.linspace(0, len(samples) - 1, target_len)
             resampled = np.interp(indices, np.arange(len(samples)), samples)
             tts_audio = resampled.astype(np.int16).tobytes()
-            tts_rate = _SAT_RATE
+            tts_rate = target_rate
 
         wav_buf = io.BytesIO()
         with wave.open(wav_buf, "wb") as wf:
