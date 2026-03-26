@@ -952,7 +952,7 @@ class ESPHomeChannel(BaseChannel):
                 wav.writeframes(audio_pcm)
 
         try:
-            return await self.transcribe_audio(tmp_path) or ""
+            return await self.transcribe_audio(tmp_path, language=self.config.stt.language) or ""
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
