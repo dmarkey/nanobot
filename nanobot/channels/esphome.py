@@ -62,7 +62,7 @@ class ESPHomeSatelliteTarget(Base):
 class STTConfig(Base):
     """Speech-to-text configuration."""
 
-    provider: Literal["local", "groq"] = "local"
+    provider: Literal["local", "groq", "zhipu"] = "local"
     model: str = "distil-small.en"
     device: Literal["cpu", "cuda"] = "cpu"
     language: str | None = None
@@ -921,6 +921,8 @@ class ESPHomeChannel(BaseChannel):
         """Transcribe 16kHz 16-bit mono PCM audio to text."""
         if self.config.stt.provider == "groq":
             return await self._do_stt_groq(audio_pcm)
+        if self.config.stt.provider == "zhipu":
+            return await self._do_stt_zhipu(audio_pcm)
         return await self._do_stt_local(audio_pcm)
 
     async def _do_stt_local(self, audio_pcm: bytes) -> str:
@@ -951,6 +953,29 @@ class ESPHomeChannel(BaseChannel):
 
         try:
             return await self.transcribe_audio(tmp_path, language=self.config.stt.language) or ""
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    async def _do_stt_zhipu(self, audio_pcm: bytes) -> str:
+        """Transcribe using Zhipu GLM-ASR API."""
+        import os
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            tmp_path = f.name
+            with wave.open(f, "wb") as wav:
+                wav.setnchannels(_SAT_CHANNELS)
+                wav.setsampwidth(_SAT_WIDTH)
+                wav.setframerate(_SAT_RATE)
+                wav.writeframes(audio_pcm)
+
+        try:
+            from nanobot.providers.transcription import ZhipuTranscriptionProvider
+
+            provider = ZhipuTranscriptionProvider(
+                api_key=os.environ.get("ZHIPU_API_KEY"),
+                language=self.config.stt.language,
+            )
+            return await provider.transcribe(tmp_path) or ""
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
