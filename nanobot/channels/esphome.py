@@ -605,32 +605,24 @@ class ESPHomeChannel(BaseChannel):
                         if pipeline_task and not pipeline_task.done():
                             pipeline_task.cancel()
 
-                        # Play dismissal sound
+                        client.send_voice_assistant_event(
+                            VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
+                        )
+                        # Play dismissal sound in background (handle_stop cancels current task)
                         if self._dismiss_sound:
-                            dismiss_url = self._make_tts_url(self._dismiss_sound)
                             key = self._media_player_keys.get(target.name)
-                            logger.info("ESPHome: dismiss sound for '{}': key={}, url={}", target.name, key, dismiss_url)
                             if key is not None:
-                                # Hardware satellite — end pipeline first, wait for I2S bus release
-                                client.send_voice_assistant_event(
-                                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
-                                )
-                                await asyncio.sleep(2.0)
-                                try:
-                                    logger.info("ESPHome: sending media_player_command to '{}'", target.name)
-                                    client.media_player_command(key, media_url=dismiss_url)
-                                    logger.info("ESPHome: media_player_command sent to '{}'", target.name)
-                                except Exception as exc:
-                                    logger.warning("ESPHome: media_player_command failed for '{}': {}", target.name, exc)
-                            else:
-                                # No media player (e.g. LVA) — can't play dismiss sound
-                                client.send_voice_assistant_event(
-                                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
-                                )
-                        else:
-                            client.send_voice_assistant_event(
-                                VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
-                            )
+                                dismiss_url = self._make_tts_url(self._dismiss_sound)
+
+                                async def _play_dismiss() -> None:
+                                    await asyncio.sleep(2.0)
+                                    try:
+                                        client.media_player_command(key, media_url=dismiss_url)
+                                        logger.info("ESPHome: dismiss sound sent to '{}'", target.name)
+                                    except Exception as exc:
+                                        logger.debug("ESPHome: dismiss sound failed for '{}': {}", target.name, exc)
+
+                                asyncio.create_task(_play_dismiss())
                         return
                     audio = bytes(audio_buffer)
                     audio_buffer.clear()
