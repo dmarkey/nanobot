@@ -972,7 +972,7 @@ class ESPHomeChannel(BaseChannel):
             from nanobot.providers.transcription import ZhipuTranscriptionProvider
 
             provider = ZhipuTranscriptionProvider(
-                api_key=os.environ.get("ZHIPU_API_KEY"),
+                api_key=self.zhipu_api_key or os.environ.get("ZHIPU_API_KEY"),
                 language=self.config.stt.language,
             )
             return await provider.transcribe(tmp_path) or ""
