@@ -389,6 +389,8 @@ class TelegramChannel(BaseChannel):
         if message_thread_id is not None:
             thread_kwargs["message_thread_id"] = message_thread_id
 
+        is_progress = bool((msg.metadata or {}).get("_progress"))
+
         reply_params = None
         if self.config.reply_to_message:
             if reply_to_message_id:
