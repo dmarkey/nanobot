@@ -616,8 +616,12 @@ class ESPHomeChannel(BaseChannel):
                                     VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
                                 )
                                 await asyncio.sleep(2.0)
-                                logger.info("ESPHome: sending media_player_command to '{}'", target.name)
-                                client.media_player_command(key, media_url=dismiss_url)
+                                try:
+                                    logger.info("ESPHome: sending media_player_command to '{}'", target.name)
+                                    client.media_player_command(key, media_url=dismiss_url)
+                                    logger.info("ESPHome: media_player_command sent to '{}'", target.name)
+                                except Exception as exc:
+                                    logger.warning("ESPHome: media_player_command failed for '{}': {}", target.name, exc)
                             else:
                                 # No media player (e.g. LVA) — can't play dismiss sound
                                 client.send_voice_assistant_event(
