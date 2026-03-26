@@ -617,7 +617,11 @@ class ESPHomeChannel(BaseChannel):
                                 await asyncio.sleep(0.3)
                                 client.media_player_command(key, media_url=dismiss_url)
                             else:
-                                # LVA — play via full TTS event sequence
+                                # LVA — transition pipeline through STT→TTS→END
+                                client.send_voice_assistant_event(
+                                    VoiceAssistantEventType.VOICE_ASSISTANT_STT_END,
+                                    {"text": ""},
+                                )
                                 client.send_voice_assistant_event(
                                     VoiceAssistantEventType.VOICE_ASSISTANT_TTS_START,
                                     {"text": ""},
