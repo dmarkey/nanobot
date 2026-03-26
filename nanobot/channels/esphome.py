@@ -131,11 +131,14 @@ class ESPHomeChannel(BaseChannel):
         # Media player key and audio format cache per satellite
         self._media_player_keys: dict[str, int] = {}
         self._satellite_sample_rates: dict[str, int] = {}  # {name: sample_rate}
-        # Thinking sound (pre-resampled 16kHz WAV)
+        # Feedback sounds (16kHz WAV)
         self._thinking_sound: bytes = b""
-        _sound_path = Path(__file__).parent.parent / "resources" / "processing.wav"
-        if _sound_path.exists():
-            self._thinking_sound = _sound_path.read_bytes()
+        self._dismiss_sound: bytes = b""
+        _res = Path(__file__).parent.parent / "resources"
+        if (_res / "processing.wav").exists():
+            self._thinking_sound = (_res / "processing.wav").read_bytes()
+        if (_res / "dismiss.wav").exists():
+            self._dismiss_sound = (_res / "dismiss.wav").read_bytes()
 
     # ------------------------------------------------------------------
     # Media player helpers
@@ -600,6 +603,13 @@ class ESPHomeChannel(BaseChannel):
                         client.send_voice_assistant_event(
                             VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
                         )
+                        # Play dismissal sound after pipeline ends (mic released)
+                        if self._dismiss_sound:
+                            await asyncio.sleep(0.3)
+                            dismiss_url = self._make_tts_url(self._dismiss_sound)
+                            key = await self._get_media_player_key(client, target.name)
+                            if key is not None:
+                                client.media_player_command(key, media_url=dismiss_url)
                         return
                     audio = bytes(audio_buffer)
                     audio_buffer.clear()
