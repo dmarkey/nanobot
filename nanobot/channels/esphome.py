@@ -604,16 +604,28 @@ class ESPHomeChannel(BaseChannel):
                         logger.info("ESPHome: pipeline aborted on '{}'", target.name)
                         if pipeline_task and not pipeline_task.done():
                             pipeline_task.cancel()
-                        client.send_voice_assistant_event(
-                            VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
-                        )
-                        # Play dismissal sound after pipeline ends (mic released)
+
+                        # Play dismissal sound
                         if self._dismiss_sound:
-                            await asyncio.sleep(0.3)
                             dismiss_url = self._make_tts_url(self._dismiss_sound)
                             key = await self._get_media_player_key(client, target.name)
                             if key is not None:
+                                # Hardware satellite — end pipeline first, then media player
+                                client.send_voice_assistant_event(
+                                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
+                                )
+                                await asyncio.sleep(0.3)
                                 client.media_player_command(key, media_url=dismiss_url)
+                            else:
+                                # LVA — send TTS URL before ending pipeline
+                                client.send_voice_assistant_event(
+                                    VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END,
+                                    {"url": dismiss_url},
+                                )
+                        else:
+                            client.send_voice_assistant_event(
+                                VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
+                            )
                         return
                     audio = bytes(audio_buffer)
                     audio_buffer.clear()
