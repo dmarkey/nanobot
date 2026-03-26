@@ -69,6 +69,7 @@ class AgentLoop:
         subagent_max_iterations: int = 15,
         disabled_tools: list[str] | None = None,
         subagent_disabled_tools: list[str] | None = None,
+        timezone: str | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig, WebSearchConfig
 
@@ -88,7 +89,7 @@ class AgentLoop:
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
 
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(workspace, timezone=timezone)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self._mcp_tools = ToolRegistry()  # Unfiltered MCP tools for subagent inheritance
@@ -156,7 +157,9 @@ class AgentLoop:
         self.tools.register(AskUserLocationTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
-            self.tools.register(CronTool(self.cron_service))
+            self.tools.register(
+                CronTool(self.cron_service, default_timezone=self.context.timezone or "UTC")
+            )
         self.tools.apply_disabled_filter(self._disabled_tools)
 
     async def _connect_mcp(self) -> None:
@@ -422,17 +425,35 @@ class AgentLoop:
             try:
                 on_stream = on_stream_end = None
                 if msg.metadata.get("_wants_stream"):
+                    # Split one answer into distinct stream segments.
+                    stream_base_id = f"{msg.session_key}:{time.time_ns()}"
+                    stream_segment = 0
+
+                    def _current_stream_id() -> str:
+                        return f"{stream_base_id}:{stream_segment}"
+
                     async def on_stream(delta: str) -> None:
                         await self.bus.publish_outbound(OutboundMessage(
                             channel=msg.channel, chat_id=msg.chat_id,
-                            content=delta, metadata={"_stream_delta": True},
+                            content=delta,
+                            metadata={
+                                "_stream_delta": True,
+                                "_stream_id": _current_stream_id(),
+                            },
                         ))
 
                     async def on_stream_end(*, resuming: bool = False) -> None:
+                        nonlocal stream_segment
                         await self.bus.publish_outbound(OutboundMessage(
                             channel=msg.channel, chat_id=msg.chat_id,
-                            content="", metadata={"_stream_end": True, "_resuming": resuming},
+                            content="",
+                            metadata={
+                                "_stream_end": True,
+                                "_resuming": resuming,
+                                "_stream_id": _current_stream_id(),
+                            },
                         ))
+                        stream_segment += 1
 
                 response = await self._process_message(
                     msg, on_stream=on_stream, on_stream_end=on_stream_end,

@@ -553,6 +553,7 @@ def gateway(
         subagent_max_iterations=config.agents.defaults.subagent_max_iterations,
         disabled_tools=config.agents.disabled_tools,
         subagent_disabled_tools=config.agents.subagent_disabled_tools,
+        timezone=config.agents.defaults.timezone,
     )
 
     # Set cron callback (needs agent)
@@ -663,6 +664,7 @@ def gateway(
         on_notify=on_heartbeat_notify,
         interval_s=hb_cfg.interval_s,
         enabled=hb_cfg.enabled,
+        timezone=config.agents.defaults.timezone,
     )
 
     if channels.enabled_channels:
@@ -775,6 +777,7 @@ def agent(
         subagent_max_iterations=config.agents.defaults.subagent_max_iterations,
         disabled_tools=config.agents.disabled_tools,
         subagent_disabled_tools=config.agents.subagent_disabled_tools,
+        timezone=config.agents.defaults.timezone,
     )
 
     # Shared reference for progress callbacks
