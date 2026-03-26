@@ -498,7 +498,11 @@ class ESPHomeChannel(BaseChannel):
                 logger.info("ESPHome: connected to '{}'", target.name)
 
                 # Cache media player key for this satellite
-                await self._get_media_player_key(client, target.name)
+                key = await self._get_media_player_key(client, target.name)
+                if key is not None:
+                    logger.info("ESPHome: media player key {} cached for '{}'", key, target.name)
+                else:
+                    logger.info("ESPHome: no media player found on '{}'", target.name)
 
                 # Per-satellite state
                 audio_buffer = bytearray()
