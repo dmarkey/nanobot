@@ -608,13 +608,15 @@ class ESPHomeChannel(BaseChannel):
                         # Play dismissal sound
                         if self._dismiss_sound:
                             dismiss_url = self._make_tts_url(self._dismiss_sound)
-                            key = await self._get_media_player_key(client, target.name)
+                            key = self._media_player_keys.get(target.name)
+                            logger.info("ESPHome: dismiss sound for '{}': key={}, url={}", target.name, key, dismiss_url)
                             if key is not None:
                                 # Hardware satellite — end pipeline first, wait for I2S bus release
                                 client.send_voice_assistant_event(
                                     VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
                                 )
                                 await asyncio.sleep(2.0)
+                                logger.info("ESPHome: sending media_player_command to '{}'", target.name)
                                 client.media_player_command(key, media_url=dismiss_url)
                             else:
                                 # No media player (e.g. LVA) — can't play dismiss sound
