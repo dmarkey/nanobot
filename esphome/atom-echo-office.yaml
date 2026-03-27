@@ -29,9 +29,6 @@ wifi:
 
 captive_portal:
 
-web_server:
-  port: 80
-
 globals:
   - id: va_starting
     type: bool
@@ -64,7 +61,7 @@ speaker:
     bits_per_sample: 16bit
     sample_rate: 16000
     channel: stereo
-    buffer_duration: 200ms
+    buffer_duration: 100ms
 
 media_player:
   - platform: speaker
@@ -74,7 +71,7 @@ media_player:
       speaker: echo_speaker
       format: WAV
     codec_support_enabled: false
-    buffer_size: 32000
+    buffer_size: 16000
     volume_min: 0.4
     files:
       - id: wake_word_sound
