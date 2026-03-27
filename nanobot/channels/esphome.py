@@ -64,6 +64,7 @@ class STTConfig(Base):
 
     provider: Literal["local", "groq", "zhipu"] = "local"
     model: str = "distil-small.en"
+    groq_model: str | None = None  # Groq Whisper model; None = provider default (whisper-large-v3)
     device: Literal["cpu", "cuda"] = "cpu"
     language: str | None = None
 
@@ -952,7 +953,8 @@ class ESPHomeChannel(BaseChannel):
                 wav.writeframes(audio_pcm)
 
         try:
-            return await self.transcribe_audio(tmp_path, language=self.config.stt.language) or ""
+            groq_model = self.config.stt.groq_model
+            return await self.transcribe_audio(tmp_path, language=self.config.stt.language, model=groq_model) or ""
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
