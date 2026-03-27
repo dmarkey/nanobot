@@ -807,8 +807,23 @@ class ESPHomeChannel(BaseChannel):
             voice_command = None
             if normalised in ("new conversation", "new session", "start over", "reset"):
                 voice_command = "/new"
-            elif normalised in ("stop", "cancel", "nevermind", "never mind"):
-                voice_command = "/stop"
+            elif normalised in (
+                "stop", "cancel", "nevermind", "never mind", "no thanks",
+                "no thank you", "thanks", "thank you", "that's all",
+                "that's it", "goodbye", "good bye", "bye", "dismiss",
+                "shut up", "quiet", "nothing", "forget it", "go away",
+                "i'm done", "done", "no", "nope", "end",
+            ):
+                logger.info("ESPHome: '{}' dismissed with '{}'", target.name, transcript)
+                if self._dismiss_sound:
+                    dismiss_url = self._make_tts_url(self._dismiss_sound)
+                    key = await self._get_media_player_key(client, target.name)
+                    if key is not None:
+                        client.media_player_command(key, media_url=dismiss_url)
+                client.send_voice_assistant_event(
+                    VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
+                )
+                return
 
             if voice_command:
                 await self._handle_message(
@@ -817,7 +832,7 @@ class ESPHomeChannel(BaseChannel):
                     content=voice_command,
                     metadata={"esphome_satellite": target.name},
                 )
-                confirmation = "Done." if voice_command == "/stop" else "New conversation started."
+                confirmation = "New conversation started."
                 wav_data = await self._tts_to_wav(confirmation, tts_rate)
                 if wav_data:
                     await self._deliver_tts(client, wav_data, use_announcements, target.name)
