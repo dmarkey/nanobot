@@ -57,6 +57,7 @@ class ESPHomeSatelliteTarget(Base):
     use_announcements: bool = False  # End pipeline and play TTS via announcement API (for single-I2S-bus devices)
     speech_threshold: float | None = None  # VAD probability threshold (overrides global)
     silence_timeout_seconds: float | None = None  # Silence after speech to trigger STT (overrides global)
+    room: str | None = None  # Room/zone grouping — only one satellite per room handles a wake word at a time
 
 
 class STTConfig(Base):
@@ -132,6 +133,8 @@ class ESPHomeChannel(BaseChannel):
         # Media player key and audio format cache per satellite
         self._media_player_keys: dict[str, int] = {}
         self._satellite_sample_rates: dict[str, int] = {}  # {name: sample_rate}
+        # Room-level wake word arbitration: {room: (satellite_name, monotonic_time)}
+        self._room_active: dict[str, tuple[str, float]] = {}
         # Feedback sounds (16kHz WAV)
         self._thinking_sound: bytes = b""
         self._dismiss_sound: bytes = b""
@@ -140,6 +143,41 @@ class ESPHomeChannel(BaseChannel):
             self._thinking_sound = (_res / "processing.wav").read_bytes()
         if (_res / "dismiss.wav").exists():
             self._dismiss_sound = (_res / "dismiss.wav").read_bytes()
+
+    # ------------------------------------------------------------------
+    # Room-level wake word arbitration
+    # ------------------------------------------------------------------
+
+    _ROOM_ARBITRATION_WINDOW = 3.0  # seconds — reject duplicates within this window
+
+    def _try_claim_room(self, target: ESPHomeSatelliteTarget) -> bool:
+        """Try to claim the room for this satellite. Returns False if another satellite already won."""
+        room = target.room
+        if room is None:
+            return True  # no room configured, always allow
+        now = time.monotonic()
+        active = self._room_active.get(room)
+        if active is not None:
+            winner_name, claimed_at = active
+            if winner_name != target.name and (now - claimed_at) < self._ROOM_ARBITRATION_WINDOW:
+                logger.info(
+                    "ESPHome: '{}' lost room '{}' arbitration to '{}' ({:.1f}s ago)",
+                    target.name, room, winner_name, now - claimed_at,
+                )
+                return False
+        self._room_active[room] = (target.name, now)
+        logger.debug("ESPHome: '{}' claimed room '{}'", target.name, room)
+        return True
+
+    def _release_room(self, target: ESPHomeSatelliteTarget) -> None:
+        """Release room claim when pipeline ends."""
+        room = target.room
+        if room is None:
+            return
+        active = self._room_active.get(room)
+        if active is not None and active[0] == target.name:
+            del self._room_active[room]
+            logger.debug("ESPHome: '{}' released room '{}'", target.name, room)
 
     # ------------------------------------------------------------------
     # Media player helpers
@@ -571,6 +609,14 @@ class ESPHomeChannel(BaseChannel):
                     nonlocal pipeline_active, speech_detected, last_speech_time
                     nonlocal vad_timeout_task, pipeline_start_time, use_announcements
                     from aioesphomeapi import VoiceAssistantFeature
+
+                    # Room arbitration: reject if another satellite in the same room already won
+                    if not self._try_claim_room(target):
+                        client.send_voice_assistant_event(
+                            VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END, None
+                        )
+                        return 0
+
                     use_announcements = target.use_announcements or bool(flags & VoiceAssistantFeature.SPEAKER)
                     audio_buffer.clear()
                     vad_buffer.clear()
@@ -598,6 +644,7 @@ class ESPHomeChannel(BaseChannel):
                         return
                     pipeline_active = False
                     speech_detected = False
+                    self._release_room(target)
                     if vad_timeout_task and not vad_timeout_task.done():
                         vad_timeout_task.cancel()
                         vad_timeout_task = None

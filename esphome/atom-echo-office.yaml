@@ -29,6 +29,14 @@ wifi:
 
 captive_portal:
 
+web_server:
+  port: 80
+
+globals:
+  - id: va_starting
+    type: bool
+    initial_value: "false"
+
 button:
   - platform: factory_reset
     id: factory_reset_btn
@@ -56,7 +64,7 @@ speaker:
     bits_per_sample: 16bit
     sample_rate: 16000
     channel: stereo
-    buffer_duration: 60ms
+    buffer_duration: 200ms
 
 media_player:
   - platform: speaker
@@ -66,8 +74,11 @@ media_player:
       speaker: echo_speaker
       format: WAV
     codec_support_enabled: false
-    buffer_size: 6000
+    buffer_size: 32000
     volume_min: 0.4
+    files:
+      - id: wake_word_sound
+        file: wake_word_triggered.wav
     on_announcement:
       - micro_wake_word.stop:
       - wait_until:
@@ -81,7 +92,11 @@ media_player:
           brightness: 100%
           effect: none
     on_idle:
-      - micro_wake_word.start:
+      - if:
+          condition:
+            - lambda: "return !id(va_starting);"
+          then:
+            - micro_wake_word.start:
       - light.turn_on:
           id: led
           red: 100%
@@ -209,10 +224,47 @@ light:
           min_brightness: 50%
           max_brightness: 100%
 
+number:
+  - platform: template
+    name: Volume
+    id: volume_control
+    icon: mdi:volume-high
+    min_value: 0
+    max_value: 100
+    step: 5
+    initial_value: 50
+    optimistic: true
+    set_action:
+      - media_player.volume_set:
+          id: echo_media_player
+          volume: !lambda "return x / 100.0;"
+
 micro_wake_word:
   on_wake_word_detected:
+    - globals.set:
+        id: va_starting
+        value: "true"
+    - micro_wake_word.stop:
+    - wait_until:
+        not:
+          microphone.is_capturing:
+    - media_player.speaker.play_on_device_media_file:
+        id: echo_media_player
+        media_file: wake_word_sound
+        announcement: true
+    - wait_until:
+        condition:
+          speaker.is_playing:
+        timeout: 1s
+    - wait_until:
+        not:
+          speaker.is_playing:
+    - delay: 250ms
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
+    - globals.set:
+        id: va_starting
+        value: "false"
   vad:
   models:
     - model: my_nano.json

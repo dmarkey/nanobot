@@ -40,6 +40,14 @@ wifi:
 
 captive_portal:
 
+web_server:
+  port: 80
+
+globals:
+  - id: va_starting
+    type: bool
+    initial_value: "false"
+
 button:
   - platform: factory_reset
     id: factory_reset_btn
@@ -113,7 +121,7 @@ media_player:
     volume_max: 0.7
     files:
       - id: wake_word_sound
-        file: processing.wav
+        file: wake_word_triggered.flac
       - id: dismiss_sound
         file: dismiss.wav
     on_announcement:
@@ -126,7 +134,11 @@ media_player:
                 not:
                   microphone.is_capturing:
     on_idle:
-      - micro_wake_word.start:
+      - if:
+          condition:
+            - lambda: "return !id(va_starting);"
+          then:
+            - micro_wake_word.start:
 
 # --- Voice assistant ---
 voice_assistant:
@@ -190,8 +202,29 @@ binary_sensor:
 # --- Wake word ---
 micro_wake_word:
   on_wake_word_detected:
+    - globals.set:
+        id: va_starting
+        value: "true"
+    - micro_wake_word.stop:
+    - wait_until:
+        not:
+          microphone.is_capturing:
+    - media_player.speaker.play_on_device_media_file:
+        id: echo_media_player
+        media_file: wake_word_sound
+        announcement: true
+    - wait_until:
+        condition:
+          media_player.is_announcing:
+        timeout: 1s
+    - wait_until:
+        not:
+          media_player.is_announcing:
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
+    - globals.set:
+        id: va_starting
+        value: "false"
   vad:
   models:
     - model: my_nano.json
