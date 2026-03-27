@@ -135,6 +135,9 @@ class ESPHomeChannel(BaseChannel):
         self._satellite_sample_rates: dict[str, int] = {}  # {name: sample_rate}
         # Room-level wake word arbitration: {room: (satellite_name, monotonic_time)}
         self._room_active: dict[str, tuple[str, float]] = {}
+        # Active satellite clients and targets for deferred delivery
+        self._satellite_clients: dict[str, Any] = {}  # {name: APIClient}
+        self._satellite_targets: dict[str, ESPHomeSatelliteTarget] = {}
         # Feedback sounds (16kHz WAV)
         self._thinking_sound: bytes = b""
         self._dismiss_sound: bytes = b""
@@ -329,9 +332,15 @@ class ESPHomeChannel(BaseChannel):
         if fut and not fut.done():
             fut.set_result(msg.content)
         else:
-            # Agent finished after we already timed out — cache for next request.
-            logger.info("ESPHome: caching deferred response for '{}'", sat_name)
-            self._deferred[sat_name] = msg.content
+            # Agent finished after pipeline timed out — deliver immediately via announcement
+            client = self._satellite_clients.get(sat_name)
+            target = self._satellite_targets.get(sat_name)
+            if client and target:
+                logger.info("ESPHome: delivering deferred response to '{}' via announcement", sat_name)
+                asyncio.create_task(self._deliver_deferred(client, target, msg.content))
+            else:
+                logger.info("ESPHome: caching deferred response for '{}'", sat_name)
+                self._deferred[sat_name] = msg.content
 
     # ------------------------------------------------------------------
     # Model loading
@@ -475,6 +484,17 @@ class ESPHomeChannel(BaseChannel):
         else:
             self._serve_tts_url(client, wav_data)
 
+    async def _deliver_deferred(self, client: Any, target: ESPHomeSatelliteTarget, text: str) -> None:
+        """TTS a deferred response and deliver it via media player announcement."""
+        try:
+            tts_rate = self._satellite_sample_rates.get(target.name, 0)
+            wav_data = await self._tts_to_wav(text, tts_rate)
+            if wav_data:
+                await self._play_via_media_player(client, self._make_tts_url(wav_data), wav_data, target.name)
+                logger.info("ESPHome: deferred response delivered to '{}'", target.name)
+        except Exception as exc:
+            logger.warning("ESPHome: failed to deliver deferred response to '{}': {}", target.name, exc)
+
     @staticmethod
     def _download_piper_voice(model_name: str, dest_dir: Path) -> None:
         """Download a piper voice model from HuggingFace."""
@@ -531,10 +551,14 @@ class ESPHomeChannel(BaseChannel):
                 disconnect_event = asyncio.Event()
 
                 async def _on_disconnect(expected: bool) -> None:
+                    self._satellite_clients.pop(target.name, None)
+                    self._satellite_targets.pop(target.name, None)
                     disconnect_event.set()
 
                 await client.connect(on_stop=_on_disconnect)
                 logger.info("ESPHome: connected to '{}'", target.name)
+                self._satellite_clients[target.name] = client
+                self._satellite_targets[target.name] = target
 
                 # Cache media player key for this satellite
                 key = await self._get_media_player_key(client, target.name)
