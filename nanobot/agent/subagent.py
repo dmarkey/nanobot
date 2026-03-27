@@ -8,6 +8,7 @@ from typing import Any
 
 from loguru import logger
 
+from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.runner import AgentRunSpec, AgentRunner
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -126,17 +127,19 @@ class SubagentManager:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task},
             ]
-            async def _log_tool_calls(tool_calls) -> None:
-                for tool_call in tool_calls:
-                    args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logger.debug("Subagent [{}] executing: {} with arguments: {}", task_id, tool_call.name, args_str)
+
+            class _SubagentHook(AgentHook):
+                async def before_execute_tools(self, context: AgentHookContext) -> None:
+                    for tool_call in context.tool_calls:
+                        args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
+                        logger.debug("Subagent [{}] executing: {} with arguments: {}", task_id, tool_call.name, args_str)
 
             result = await self.runner.run(AgentRunSpec(
                 initial_messages=messages,
                 tools=tools,
                 model=self.model,
                 max_iterations=self.default_max_iterations,
-                before_execute_tools=_log_tool_calls,
+                hook=_SubagentHook(),
                 max_iterations_message=(
                     "You have used all your available tool calls. Summarise:\n"
                     "1. What you accomplished\n"
