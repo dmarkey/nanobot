@@ -148,6 +148,31 @@ class ESPHomeChannel(BaseChannel):
             self._dismiss_sound = (_res / "dismiss.wav").read_bytes()
 
     # ------------------------------------------------------------------
+    # Markdown stripping for TTS
+    # ------------------------------------------------------------------
+
+    _MD_PATTERNS: list[tuple[str, str]] = [
+        (r"\*\*(.+?)\*\*", r"\1"),      # **bold**
+        (r"\*(.+?)\*", r"\1"),            # *italic*
+        (r"__(.+?)__", r"\1"),            # __bold__
+        (r"_(.+?)_", r"\1"),              # _italic_
+        (r"~~(.+?)~~", r"\1"),            # ~~strikethrough~~
+        (r"`(.+?)`", r"\1"),              # `code`
+        (r"^#{1,6}\s+", ""),              # ### headers
+        (r"^\s*[-*+]\s+", ""),            # - bullet points
+        (r"^\s*\d+\.\s+", ""),            # 1. numbered lists
+        (r"\[([^\]]+)\]\([^)]+\)", r"\1"),  # [text](url)
+    ]
+
+    @classmethod
+    def _strip_markdown(cls, text: str) -> str:
+        """Remove markdown formatting so TTS reads clean text."""
+        import re
+        for pattern, replacement in cls._MD_PATTERNS:
+            text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
+        return text.strip()
+
+    # ------------------------------------------------------------------
     # Room-level wake word arbitration
     # ------------------------------------------------------------------
 
@@ -487,6 +512,7 @@ class ESPHomeChannel(BaseChannel):
     async def _deliver_deferred(self, client: Any, target: ESPHomeSatelliteTarget, text: str) -> None:
         """TTS a deferred response and deliver it via media player announcement."""
         try:
+            text = self._strip_markdown(text)
             tts_rate = self._satellite_sample_rates.get(target.name, 0)
             wav_data = await self._tts_to_wav(text, tts_rate)
             if wav_data:
@@ -953,6 +979,7 @@ class ESPHomeChannel(BaseChannel):
                 VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END,
                 {"conversation_id": target.name, "continue_conversation": continue_conv},
             )
+            response_text = self._strip_markdown(response_text)
             logger.info("ESPHome: responding to '{}': {}", target.name, response_text)
 
             if not response_text.strip():

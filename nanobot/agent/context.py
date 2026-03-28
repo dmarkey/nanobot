@@ -106,10 +106,11 @@ IMPORTANT: To send files (images, documents, audio, video) to the user, you MUST
     _VOICE_CHANNEL_HINT = (
         "CRITICAL: This is a voice channel — your response will be read aloud by a TTS engine. "
         "Keep responses under 30 words — one or two short sentences. "
-        "NEVER use emojis, markdown, bullet points, numbered lists, links, code blocks, or any formatting. "
-        "NEVER use acronyms or abbreviations — spell them out (say 'kilometres per hour' not 'km/h'). "
+        "ABSOLUTELY NO markdown: no **, no -, no bullet points, no numbered lists, no links, no code blocks, no headers, no formatting of any kind. "
+        "NEVER use emojis, acronyms, or abbreviations — spell them out (say 'kilometres per hour' not 'km/h'). "
         "Avoid special characters, symbols, or anything that doesn't sound natural when spoken. "
-        "Write exactly how you would speak. Be concise and conversational. "
+        "Write plain spoken English only — exactly as you would say it out loud in conversation. "
+        "If listing items, say them in a flowing sentence, not as a list. "
         "Use at most 1 tool call only if essential."
     )
 
