@@ -97,6 +97,7 @@ class ProvidersConfig(Base):
     minimax: ProviderConfig = Field(default_factory=ProviderConfig)
     fireworks: ProviderConfig = Field(default_factory=ProviderConfig)  # Fireworks AI gateway
     mistral: ProviderConfig = Field(default_factory=ProviderConfig)
+    together: ProviderConfig = Field(default_factory=ProviderConfig)  # Together AI
     stepfun: ProviderConfig = Field(default_factory=ProviderConfig)  # Step Fun (阶跃星辰)
     aihubmix: ProviderConfig = Field(default_factory=ProviderConfig)  # AiHubMix API gateway
     siliconflow: ProviderConfig = Field(default_factory=ProviderConfig)  # SiliconFlow (硅基流动)

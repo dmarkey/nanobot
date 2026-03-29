@@ -316,6 +316,15 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         backend="openai_compat",
         default_api_base="https://api.mistral.ai/v1",
     ),
+    # Together AI: OpenAI-compatible inference platform
+    ProviderSpec(
+        name="together",
+        keywords=("together",),
+        env_key="TOGETHER_API_KEY",
+        display_name="Together AI",
+        backend="openai_compat",
+        default_api_base="https://api.together.xyz/v1",
+    ),
     # Step Fun (阶跃星辰): OpenAI-compatible API
     ProviderSpec(
         name="stepfun",
