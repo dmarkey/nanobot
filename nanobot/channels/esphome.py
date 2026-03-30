@@ -58,6 +58,8 @@ class ESPHomeSatelliteTarget(Base):
     speech_threshold: float | None = None  # VAD probability threshold (overrides global)
     silence_timeout_seconds: float | None = None  # Silence after speech to trigger STT (overrides global)
     room: str | None = None  # Room/zone grouping — only one satellite per room handles a wake word at a time
+    volume: int | None = None  # Media player volume (0–100%); None = leave unchanged
+    mic_volume: int | None = None  # Microphone gain (0–100%); requires a "Mic Volume" number entity on the device
 
 
 class STTConfig(Base):
@@ -234,6 +236,27 @@ class ESPHomeChannel(BaseChannel):
         except Exception:
             logger.debug("ESPHome: could not find media player on '{}'", sat_name)
         return None
+
+    async def _set_number_entity(
+        self, client: Any, sat_name: str, entity_name: str, value: float,
+    ) -> bool:
+        """Find a number entity by name on the device and set its value. Returns True if found."""
+        try:
+            from aioesphomeapi.model import NumberInfo
+            entities, _ = await client.list_entities_services()
+            name_lower = entity_name.lower()
+            for ent in entities:
+                if isinstance(ent, NumberInfo) and ent.name.lower() == name_lower:
+                    clamped = max(ent.min_value, min(ent.max_value, value))
+                    client.number_command(ent.key, clamped)
+                    logger.info(
+                        "ESPHome: set '{}' to {} on '{}'",
+                        ent.name, clamped, sat_name,
+                    )
+                    return True
+        except Exception as exc:
+            logger.debug("ESPHome: failed to set number '{}' on '{}': {}", entity_name, sat_name, exc)
+        return False
 
     async def _play_via_media_player(
         self, client: Any, url: str, wav_data: bytes, sat_name: str = "",
@@ -590,8 +613,18 @@ class ESPHomeChannel(BaseChannel):
                 key = await self._get_media_player_key(client, target.name)
                 if key is not None:
                     logger.info("ESPHome: media player key {} cached for '{}'", key, target.name)
+                    if target.volume is not None:
+                        vol = max(0, min(100, target.volume)) / 100.0
+                        client.media_player_command(key, volume=vol)
+                        logger.info("ESPHome: set volume to {}% on '{}'", target.volume, target.name)
                 else:
                     logger.info("ESPHome: no media player found on '{}'", target.name)
+
+                # Set mic volume if configured
+                if target.mic_volume is not None:
+                    found = await self._set_number_entity(client, target.name, "Mic Volume", float(target.mic_volume))
+                    if not found:
+                        logger.warning("ESPHome: no 'Mic Volume' number entity found on '{}'", target.name)
 
                 # Per-satellite state
                 audio_buffer = bytearray()
