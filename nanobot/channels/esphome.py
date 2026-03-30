@@ -608,7 +608,6 @@ class ESPHomeChannel(BaseChannel):
                 async def _on_disconnect(expected: bool) -> None:
                     self._satellite_clients.pop(target.name, None)
                     self._satellite_targets.pop(target.name, None)
-                    getattr(self, "_entity_cache", {}).pop(target.name, None)
                     disconnect_event.set()
 
                 await client.connect(on_stop=_on_disconnect)

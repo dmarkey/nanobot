@@ -235,6 +235,15 @@ number:
       - media_player.volume_set:
           id: echo_media_player
           volume: !lambda "return x / 100.0;"
+  - platform: template
+    name: Mic Volume
+    id: mic_volume_control
+    icon: mdi:microphone
+    min_value: 0
+    max_value: 100
+    step: 5
+    initial_value: 100
+    optimistic: true
 
 micro_wake_word:
   on_wake_word_detected:
