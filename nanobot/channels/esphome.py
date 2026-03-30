@@ -213,49 +213,55 @@ class ESPHomeChannel(BaseChannel):
     # Media player helpers
     # ------------------------------------------------------------------
 
+    async def _list_entities(self, client: Any, sat_name: str) -> list[Any]:
+        """List entities for a satellite, caching the result."""
+        cache = getattr(self, "_entity_cache", {})
+        if sat_name in cache:
+            return cache[sat_name]
+        try:
+            entities, _ = await client.list_entities_services()
+            cache[sat_name] = entities
+            self._entity_cache = cache
+            return entities
+        except Exception:
+            logger.debug("ESPHome: could not list entities on '{}'", sat_name)
+            return []
+
     async def _get_media_player_key(self, client: Any, sat_name: str) -> int | None:
         """Get the media player entity key, caching it and the audio format per satellite."""
         if sat_name in self._media_player_keys:
             return self._media_player_keys[sat_name]
-        try:
-            from aioesphomeapi.model import MediaPlayerInfo, MediaPlayerFormatPurpose
-            entities, _ = await client.list_entities_services()
-            for ent in entities:
-                if isinstance(ent, MediaPlayerInfo):
-                    self._media_player_keys[sat_name] = ent.key
-                    # Cache the announcement sample rate
-                    for fmt in ent.supported_formats:
-                        if fmt.purpose == MediaPlayerFormatPurpose.ANNOUNCEMENT and fmt.sample_rate:
-                            self._satellite_sample_rates[sat_name] = fmt.sample_rate
-                            logger.info(
-                                "ESPHome: '{}' announcement format: {} {}Hz {}ch",
-                                sat_name, fmt.format, fmt.sample_rate, fmt.num_channels,
-                            )
-                            break
-                    return ent.key
-        except Exception:
-            logger.debug("ESPHome: could not find media player on '{}'", sat_name)
+        from aioesphomeapi.model import MediaPlayerInfo, MediaPlayerFormatPurpose
+        for ent in await self._list_entities(client, sat_name):
+            if isinstance(ent, MediaPlayerInfo):
+                self._media_player_keys[sat_name] = ent.key
+                # Cache the announcement sample rate
+                for fmt in ent.supported_formats:
+                    if fmt.purpose == MediaPlayerFormatPurpose.ANNOUNCEMENT and fmt.sample_rate:
+                        self._satellite_sample_rates[sat_name] = fmt.sample_rate
+                        logger.info(
+                            "ESPHome: '{}' announcement format: {} {}Hz {}ch",
+                            sat_name, fmt.format, fmt.sample_rate, fmt.num_channels,
+                        )
+                        break
+                return ent.key
         return None
 
     async def _set_number_entity(
         self, client: Any, sat_name: str, entity_name: str, value: float,
     ) -> bool:
         """Find a number entity by name on the device and set its value. Returns True if found."""
-        try:
-            from aioesphomeapi.model import NumberInfo
-            entities, _ = await client.list_entities_services()
-            name_lower = entity_name.lower()
-            for ent in entities:
-                if isinstance(ent, NumberInfo) and ent.name.lower() == name_lower:
-                    clamped = max(ent.min_value, min(ent.max_value, value))
-                    client.number_command(ent.key, clamped)
-                    logger.info(
-                        "ESPHome: set '{}' to {} on '{}'",
-                        ent.name, clamped, sat_name,
-                    )
-                    return True
-        except Exception as exc:
-            logger.debug("ESPHome: failed to set number '{}' on '{}': {}", entity_name, sat_name, exc)
+        from aioesphomeapi.model import NumberInfo
+        name_lower = entity_name.lower()
+        for ent in await self._list_entities(client, sat_name):
+            if isinstance(ent, NumberInfo) and ent.name.lower() == name_lower:
+                clamped = max(ent.min_value, min(ent.max_value, value))
+                client.number_command(ent.key, clamped)
+                logger.info(
+                    "ESPHome: set '{}' to {} on '{}'",
+                    ent.name, clamped, sat_name,
+                )
+                return True
         return False
 
     async def _play_via_media_player(
@@ -602,6 +608,7 @@ class ESPHomeChannel(BaseChannel):
                 async def _on_disconnect(expected: bool) -> None:
                     self._satellite_clients.pop(target.name, None)
                     self._satellite_targets.pop(target.name, None)
+                    getattr(self, "_entity_cache", {}).pop(target.name, None)
                     disconnect_event.set()
 
                 await client.connect(on_stop=_on_disconnect)
