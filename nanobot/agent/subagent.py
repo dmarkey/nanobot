@@ -21,6 +21,21 @@ from nanobot.config.schema import ExecToolConfig
 from nanobot.providers.base import LLMProvider
 
 
+class _SubagentHook(AgentHook):
+    """Logging-only hook for subagent execution."""
+
+    def __init__(self, task_id: str) -> None:
+        self._task_id = task_id
+
+    async def before_execute_tools(self, context: AgentHookContext) -> None:
+        for tool_call in context.tool_calls:
+            args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
+            logger.debug(
+                "Subagent [{}] executing: {} with arguments: {}",
+                self._task_id, tool_call.name, args_str,
+            )
+
+
 class SubagentManager:
     """Manages background subagent execution."""
 
@@ -128,18 +143,12 @@ class SubagentManager:
                 {"role": "user", "content": task},
             ]
 
-            class _SubagentHook(AgentHook):
-                async def before_execute_tools(self, context: AgentHookContext) -> None:
-                    for tool_call in context.tool_calls:
-                        args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                        logger.debug("Subagent [{}] executing: {} with arguments: {}", task_id, tool_call.name, args_str)
-
             result = await self.runner.run(AgentRunSpec(
                 initial_messages=messages,
                 tools=tools,
                 model=self.model,
                 max_iterations=self.default_max_iterations,
-                hook=_SubagentHook(),
+                hook=_SubagentHook(task_id),
                 max_iterations_message=(
                     "You have used all your available tool calls. Summarise:\n"
                     "1. What you accomplished\n"
@@ -226,7 +235,7 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
             lines.append("Failure:")
             lines.append(f"- {result.error}")
         return "\n".join(lines) or (result.error or "Error: subagent execution failed.")
-    
+
     def _build_subagent_prompt(self) -> str:
         """Build a focused system prompt for the subagent."""
         from nanobot.agent.context import ContextBuilder
