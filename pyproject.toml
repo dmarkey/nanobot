@@ -73,6 +73,9 @@ voice = [
     "faster-whisper>=1.0.0",
     "piper-tts>=1.4.0",
 ]
+discord = [
+    "discord.py>=2.5.2,<3.0.0",
+]
 langsmith = [
     "langsmith>=0.1.0",
 ]
