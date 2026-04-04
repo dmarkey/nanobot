@@ -13,6 +13,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.channels.manager import ChannelManager
 from nanobot.config.schema import ChannelsConfig
+from nanobot.utils.restart import RestartNotice
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +175,7 @@ async def test_manager_loads_plugin_from_dict_config():
         channels=ChannelsConfig.model_validate({
             "fakeplugin": {"enabled": True, "allowFrom": ["*"]},
         }),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     with patch(
@@ -277,7 +278,7 @@ async def test_manager_skips_disabled_plugin():
         channels=ChannelsConfig.model_validate({
             "fakeplugin": {"enabled": False},
         }),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     with patch(
@@ -373,7 +374,7 @@ async def test_send_with_retry_succeeds_first_try():
 
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(send_max_retries=3),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -410,7 +411,7 @@ async def test_send_with_retry_retries_on_failure():
 
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(send_max_retries=3),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -451,7 +452,7 @@ async def test_send_with_retry_no_retry_when_max_is_zero():
 
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(send_max_retries=0),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -492,7 +493,7 @@ async def test_send_with_retry_calls_send_delta():
 
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(send_max_retries=3),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -536,7 +537,7 @@ async def test_send_with_retry_skips_send_when_streamed():
 
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(send_max_retries=3),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -574,7 +575,7 @@ async def test_send_with_retry_propagates_cancelled_error():
 
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(send_max_retries=3),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -611,7 +612,7 @@ async def test_send_with_retry_propagates_cancelled_error_during_sleep():
 
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(send_max_retries=3),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -682,7 +683,7 @@ async def test_validate_allow_from_raises_on_empty_list():
     """_validate_allow_from should raise SystemExit when allow_from is empty list."""
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -701,7 +702,7 @@ async def test_validate_allow_from_passes_with_asterisk():
     """_validate_allow_from should not raise when allow_from contains '*'."""
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -718,7 +719,7 @@ async def test_get_channel_returns_channel_if_exists():
     """get_channel should return the channel if it exists."""
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -736,7 +737,7 @@ async def test_get_status_returns_running_state():
     """get_status should return enabled and running state for each channel."""
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -757,7 +758,7 @@ async def test_enabled_channels_returns_channel_names():
     """enabled_channels should return list of enabled channel names."""
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -781,7 +782,7 @@ async def test_stop_all_cancels_dispatcher_and_stops_channels():
     """stop_all should cancel the dispatch task and stop all channels."""
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -825,7 +826,7 @@ async def test_start_channel_logs_error_on_failure():
 
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -858,7 +859,7 @@ async def test_stop_all_handles_channel_exception():
 
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -876,7 +877,7 @@ async def test_start_all_no_channels_logs_warning():
     """start_all should log warning when no channels are enabled."""
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -896,7 +897,7 @@ async def test_start_all_creates_dispatch_task():
     """start_all should create the dispatch task when channels exist."""
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(),
-        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
     )
 
     mgr = ChannelManager.__new__(ChannelManager)
@@ -929,3 +930,30 @@ async def test_start_all_creates_dispatch_task():
     # Dispatch task should have been created
     assert mgr._dispatch_task is not None
 
+
+@pytest.mark.asyncio
+async def test_notify_restart_done_enqueues_outbound_message():
+    """Restart notice should schedule send_with_retry for target channel."""
+    fake_config = SimpleNamespace(
+        channels=ChannelsConfig(),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key=""), zhipu=SimpleNamespace(api_key="")),
+    )
+
+    mgr = ChannelManager.__new__(ChannelManager)
+    mgr.config = fake_config
+    mgr.bus = MessageBus()
+    mgr.channels = {"feishu": _StartableChannel(fake_config, mgr.bus)}
+    mgr._dispatch_task = None
+    mgr._send_with_retry = AsyncMock()
+
+    notice = RestartNotice(channel="feishu", chat_id="oc_123", started_at_raw="100.0")
+    with patch("nanobot.channels.manager.consume_restart_notice_from_env", return_value=notice):
+        mgr._notify_restart_done_if_needed()
+
+    await asyncio.sleep(0)
+    mgr._send_with_retry.assert_awaited_once()
+    sent_channel, sent_msg = mgr._send_with_retry.await_args.args
+    assert sent_channel is mgr.channels["feishu"]
+    assert sent_msg.channel == "feishu"
+    assert sent_msg.chat_id == "oc_123"
+    assert sent_msg.content.startswith("Restart completed")

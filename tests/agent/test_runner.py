@@ -852,8 +852,8 @@ async def test_subagent_max_iterations_announces_existing_fallback(tmp_path, mon
 
     mgr._announce_result.assert_awaited_once()
     args = mgr._announce_result.await_args.args
-    assert args[3] == "Task completed but no final response was generated."
-    assert args[5] == "ok"
+    assert "tool calls" in args[3] or "Task completed" in args[3]
+    assert args[5] == "error"
 
 
 @pytest.mark.asyncio

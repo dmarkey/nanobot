@@ -165,7 +165,9 @@ This is a fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot) with the fol
 - [Agent Social Network](#-agent-social-network)
 - [Configuration](#️-configuration)
 - [Multiple Instances](#-multiple-instances)
+- [Memory](#-memory)
 - [CLI Reference](#-cli-reference)
+- [In-Chat Commands](#-in-chat-commands)
 - [Python SDK](#-python-sdk)
 - [OpenAI-Compatible API](#-openai-compatible-api)
 - [Docker](#-docker)
@@ -211,7 +213,7 @@ pip install nanobot-ai-tng
 uv tool install nanobot-ai-tng
 ```
 
-**Install from source** (latest features, recommended for development)
+**Install from source** (latest features, experimental changes may land here first; recommended for development)
 
 ```bash
 git clone https://github.com/dmarkey/nanobot.git
@@ -219,13 +221,13 @@ cd nanobot
 pip install -e .
 ```
 
-**Install with [uv](https://github.com/astral-sh/uv)** (stable, fast)
+**Install with [uv](https://github.com/astral-sh/uv)** (stable release, fast)
 
 ```bash
 uv tool install nanobot-ai-tng
 ```
 
-**Install from PyPI** (stable)
+**Install from PyPI** (stable release)
 
 ```bash
 pip install nanobot-ai-tng
@@ -910,6 +912,11 @@ Simply send the command above to your nanobot (via CLI or any chat channel), and
 
 Config file: `~/.nanobot/config.json`
 
+> [!NOTE]
+> If your config file is older than the current schema, you can refresh it without overwriting your existing values:
+> run `nanobot onboard`, then answer `N` when asked whether to overwrite the config.
+> nanobot will merge in missing default fields and keep your current settings.
+
 ### Providers
 
 > [!TIP]
@@ -1259,16 +1266,23 @@ Global settings that apply to all channels. Configure under the `channels` secti
 
 #### Retry Behavior
 
-When a channel send operation raises an error, nanobot retries with exponential backoff:
+Retry is intentionally simple.
 
-- **Attempt 1**: Initial send
-- **Attempts 2-4**: Retry delays are 1s, 2s, 4s
-- **Attempts 5+**: Retry delay caps at 4s
-- **Transient failures** (network hiccups, temporary API limits): Retry usually succeeds
-- **Permanent failures** (invalid token, channel banned): All retries fail
+When a channel `send()` raises, nanobot retries at the channel-manager layer. By default, `channels.sendMaxRetries` is `3`, and that count includes the initial send.
+
+- **Attempt 1**: Send immediately
+- **Attempt 2**: Retry after `1s`
+- **Attempt 3**: Retry after `2s`
+- **Higher retry budgets**: Backoff continues as `1s`, `2s`, `4s`, then stays capped at `4s`
+- **Transient failures**: Network hiccups and temporary API limits often recover on the next attempt
+- **Permanent failures**: Invalid tokens, revoked access, or banned channels will exhaust the retry budget and fail cleanly
 
 > [!NOTE]
-> When a channel is completely unavailable, there's no way to notify the user since we cannot reach them through that channel. Monitor logs for "Failed to send to {channel} after N attempts" to detect persistent delivery failures.
+> This design is deliberate: channel implementations should raise on delivery failure, and the channel manager owns the shared retry policy.
+>
+> Some channels may still apply small API-specific retries internally. For example, Telegram separately retries timeout and flood-control errors before surfacing a final failure to the manager.
+>
+> If a channel is completely unreachable, nanobot cannot notify the user through that same channel. Watch logs for `Failed to send to {channel} after N attempts` to spot persistent delivery failures.
 
 ### Web Search
 
@@ -1280,17 +1294,40 @@ When a channel send operation raises an error, nanobot retries with exponential 
 
 nanobot supports multiple web search providers. Configure in `~/.nanobot/config.json` under `tools.web.search`.
 
+By default, web tools are enabled and web search uses `duckduckgo`, so search works out of the box without an API key.
+
+If you want to disable all built-in web tools entirely, set `tools.web.enable` to `false`. This removes both `web_search` and `web_fetch` from the tool list sent to the LLM.
+
+If you need to allow trusted private ranges such as Tailscale / CGNAT addresses, you can explicitly exempt them from SSRF blocking with `tools.ssrfWhitelist`:
+
+```json
+{
+  "tools": {
+    "ssrfWhitelist": ["100.64.0.0/10"]
+  }
+}
+```
+
 | Provider | Config fields | Env var fallback | Free |
 |----------|--------------|------------------|------|
-| `brave` (default) | `apiKey` | `BRAVE_API_KEY` | No |
+| `brave` | `apiKey` | `BRAVE_API_KEY` | No |
 | `tavily` | `apiKey` | `TAVILY_API_KEY` | No |
 | `jina` | `apiKey` | `JINA_API_KEY` | Free tier (10M tokens) |
 | `searxng` | `baseUrl` | `SEARXNG_BASE_URL` | Yes (self-hosted) |
-| `duckduckgo` | — | — | Yes |
+| `duckduckgo` (default) | — | — | Yes |
 
-When credentials are missing, nanobot automatically falls back to DuckDuckGo.
+**Disable all built-in web tools:**
+```json
+{
+  "tools": {
+    "web": {
+      "enable": false
+    }
+  }
+}
+```
 
-**Brave** (default):
+**Brave:**
 ```json
 {
   "tools": {
@@ -1361,7 +1398,14 @@ When credentials are missing, nanobot automatically falls back to DuckDuckGo.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `provider` | string | `"brave"` | Search backend: `brave`, `tavily`, `jina`, `searxng`, `duckduckgo` |
+| `enable` | boolean | `true` | Enable or disable all built-in web tools (`web_search` + `web_fetch`) |
+| `proxy` | string or null | `null` | Proxy for all web requests, for example `http://127.0.0.1:7890` |
+
+#### `tools.web.search`
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `provider` | string | `"duckduckgo"` | Search backend: `brave`, `tavily`, `jina`, `searxng`, `duckduckgo` |
 | `apiKey` | string | `""` | API key for Brave or Tavily |
 | `baseUrl` | string | `""` | Base URL for SearXNG |
 | `maxResults` | integer | `5` | Results per search (1–10) |
@@ -1597,6 +1641,18 @@ nanobot gateway --config ~/.nanobot-telegram/config.json --workspace /tmp/nanobo
 - `--workspace` overrides the workspace defined in the config file
 - Cron jobs and runtime media/state are derived from the config directory
 
+## 🧠 Memory
+
+nanobot uses a layered memory system designed to stay light in the moment and durable over
+time.
+
+- `memory/history.jsonl` stores append-only summarized history
+- `SOUL.md`, `USER.md`, and `memory/MEMORY.md` store long-term knowledge managed by Dream
+- `Dream` runs on a schedule and can also be triggered manually
+- memory changes can be inspected and restored with built-in commands
+
+If you want the full design, see [docs/MEMORY.md](docs/MEMORY.md).
+
 ## 💻 CLI Reference
 
 | Command | Description |
@@ -1618,6 +1674,23 @@ nanobot gateway --config ~/.nanobot-telegram/config.json --workspace /tmp/nanobo
 | `nanobot channels status` | Show channel status |
 
 Interactive mode exits: `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
+
+## 💬 In-Chat Commands
+
+These commands work inside chat channels and interactive agent sessions:
+
+| Command | Description |
+|---------|-------------|
+| `/new` | Start a new conversation |
+| `/stop` | Stop the current task |
+| `/restart` | Restart the bot |
+| `/status` | Show bot status |
+| `/dream` | Run Dream memory consolidation now |
+| `/dream-log` | Show the latest Dream memory change |
+| `/dream-log <sha>` | Show a specific Dream memory change |
+| `/dream-restore` | List recent Dream memory versions |
+| `/dream-restore <sha>` | Restore memory to the state before a specific change |
+| `/help` | Show available in-chat commands |
 
 <details>
 <summary><b>Heartbeat (Periodic Tasks)</b></summary>
