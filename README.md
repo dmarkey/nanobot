@@ -956,6 +956,7 @@ Config file: `~/.nanobot/config.json`
 | `github_copilot` | LLM (GitHub Copilot, OAuth) | `nanobot provider login github-copilot` |
 | `fireworks` | LLM (Fireworks AI gateway) | [fireworks.ai](https://fireworks.ai) |
 | `parasail` | LLM (Parasail gateway) | [parasail.io](https://parasail.io) |
+| `qianfan` | LLM (Baidu Qianfan) | [cloud.baidu.com](https://cloud.baidu.com/doc/qianfan/s/Hmh4suq26) |
 
 <details>
 <summary><b>OpenAI Codex (OAuth)</b></summary>
