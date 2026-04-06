@@ -39,8 +39,8 @@ class ChannelManager:
         """Initialize channels discovered via pkgutil scan + entry_points plugins."""
         from nanobot.channels.registry import discover_all
 
-        groq_key = self.config.providers.groq.api_key
-        zhipu_key = self.config.providers.zhipu.api_key
+        transcription_provider = self.config.channels.transcription_provider
+        transcription_key = self._resolve_transcription_key(transcription_provider)
 
         for name, cls in discover_all().items():
             section = getattr(self.config.channels, name, None)
@@ -55,8 +55,8 @@ class ChannelManager:
                 continue
             try:
                 channel = cls(section, self.bus)
-                channel.transcription_api_key = groq_key
-                channel.zhipu_api_key = zhipu_key
+                channel.transcription_provider = transcription_provider
+                channel.transcription_api_key = transcription_key
                 self.channels[name] = channel
                 logger.info("{} channel enabled", cls.display_name)
             except Exception as e:
@@ -79,6 +79,15 @@ class ChannelManager:
                 logger.warning("Alexa channel not available: {}", e)
 
         self._validate_allow_from()
+
+    def _resolve_transcription_key(self, provider: str) -> str:
+        """Pick the API key for the configured transcription provider."""
+        try:
+            if provider == "openai":
+                return self.config.providers.openai.api_key
+            return self.config.providers.groq.api_key
+        except AttributeError:
+            return ""
 
     def _validate_allow_from(self) -> None:
         for name, ch in self.channels.items():
