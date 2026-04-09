@@ -33,6 +33,19 @@ from rich.table import Table
 from rich.text import Text
 
 from nanobot import __logo__, __version__
+
+
+class SafeFileHistory(FileHistory):
+    """FileHistory subclass that sanitizes surrogate characters on write.
+
+    On Windows, special Unicode input (emoji, mixed-script) can produce
+    surrogate characters that crash prompt_toolkit's file write.
+    See issue #2846.
+    """
+
+    def store_string(self, string: str) -> None:
+        safe = string.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+        super().store_string(safe)
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
 from nanobot.config.paths import get_workspace_path, is_default_workspace
 from nanobot.config.schema import Config
@@ -119,7 +132,7 @@ def _init_prompt_session() -> None:
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
     _PROMPT_SESSION = PromptSession(
-        history=FileHistory(str(history_file)),
+        history=SafeFileHistory(str(history_file)),
         enable_open_in_editor=False,
         multiline=False,  # Enter submits (single line mode)
     )
@@ -577,6 +590,7 @@ def serve(
         mcp_servers=runtime_config.tools.mcp_servers,
         channels_config=runtime_config.channels,
         timezone=runtime_config.agents.defaults.timezone,
+        unified_session=runtime_config.agents.defaults.unified_session,
     )
 
     model_name = runtime_config.agents.defaults.model
@@ -672,6 +686,7 @@ def gateway(
         disabled_tools=config.agents.disabled_tools,
         subagent_disabled_tools=config.agents.subagent_disabled_tools,
         timezone=config.agents.defaults.timezone,
+        unified_session=config.agents.defaults.unified_session,
     )
 
     # Set cron callback (needs agent)
@@ -922,6 +937,7 @@ def agent(
         disabled_tools=config.agents.disabled_tools,
         subagent_disabled_tools=config.agents.subagent_disabled_tools,
         timezone=config.agents.defaults.timezone,
+        unified_session=config.agents.defaults.unified_session,
     )
     restart_notice = consume_restart_notice_from_env()
     if restart_notice and should_show_cli_restart_notice(restart_notice, session_id):
@@ -1126,7 +1142,7 @@ def channels_status(
 
     table = Table(title="Channel Status")
     table.add_column("Channel", style="cyan")
-    table.add_column("Enabled", style="green")
+    table.add_column("Enabled")
 
     for name, cls in sorted(discover_all().items()):
         section = getattr(config.channels, name, None)
@@ -1261,7 +1277,7 @@ def plugins_list():
     table = Table(title="Channel Plugins")
     table.add_column("Name", style="cyan")
     table.add_column("Source", style="magenta")
-    table.add_column("Enabled", style="green")
+    table.add_column("Enabled")
 
     for name in sorted(all_channels):
         cls = all_channels[name]
