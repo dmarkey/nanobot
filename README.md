@@ -340,6 +340,7 @@ Connect nanobot to your favorite chat platform. Want to build your own? See the 
 | **QQ** | App ID + App Secret |
 | **Alexa** | Alexa Developer account + skill deployment (see `alexa-skill/`) |
 | **Wecom** | Bot ID + Bot Secret |
+| **Microsoft Teams** | App ID + App Password + public HTTPS endpoint |
 | **Mochat** | Claw token (auto-setup available) |
 
 <details>
@@ -458,6 +459,7 @@ If you prefer to configure manually, add the following to `~/.nanobot/config.jso
       "enabled": true,
       "token": "YOUR_BOT_TOKEN",
       "allowFrom": ["YOUR_USER_ID"],
+      "allowChannels": [],
       "groupPolicy": "mention",
       "streaming": true
     }
@@ -470,6 +472,7 @@ If you prefer to configure manually, add the following to `~/.nanobot/config.jso
 > - `"open"` — Respond to all messages
 > DMs always respond when the sender is in `allowFrom`.
 > - If you set group policy to open create new threads as private threads and then @ the bot into it. Otherwise the thread itself and the channel in which you spawned it will spawn a bot session.
+> `allowChannels` restricts the bot to specific Discord channel IDs. Empty (default) means respond in every channel the bot can see. Example: `["1234567890", "0987654321"]`. The filter applies after `allowFrom`, so both must pass.
 > `streaming` defaults to `true`. Disable it only if you explicitly want non-streaming replies.
 
 **5. Invite the bot**
@@ -916,6 +919,56 @@ Go to the WeCom admin console → Intelligent Robot → Create Robot → select 
   }
 }
 ```
+
+**4. Run**
+
+```bash
+nanobot gateway
+```
+
+</details>
+
+<details>
+<summary><b>Microsoft Teams</b> (MVP — DM only)</summary>
+
+> Direct-message text in/out, tenant-aware OAuth, conversation reference persistence.
+> Uses a public HTTPS webhook — no WebSocket; you need a tunnel or reverse proxy.
+
+**1. Install the optional dependency**
+
+```bash
+pip install nanobot-ai[msteams]
+```
+
+**2. Create a Teams / Azure bot app registration**
+
+Create or reuse a Microsoft Teams / Azure bot app registration. Set the bot messaging endpoint to a public HTTPS URL ending in `/api/messages`.
+
+**3. Configure**
+
+```json
+{
+  "channels": {
+    "msteams": {
+      "enabled": true,
+      "appId": "YOUR_APP_ID",
+      "appPassword": "YOUR_APP_SECRET",
+      "tenantId": "YOUR_TENANT_ID",
+      "host": "0.0.0.0",
+      "port": 3978,
+      "path": "/api/messages",
+      "allowFrom": ["*"],
+      "replyInThread": true,
+      "mentionOnlyResponse": "Hi — what can I help with?",
+      "validateInboundAuth": true
+    }
+  }
+}
+```
+
+> - `replyInThread: true` replies to the triggering Teams activity when a stored `activity_id` is available.
+> - `mentionOnlyResponse` controls what Nanobot receives when a user sends only a bot mention (`<at>Nanobot</at>`). Set to `""` to ignore mention-only messages.
+> - `validateInboundAuth: true` enables inbound Bot Framework bearer-token validation (signature, issuer, audience, lifetime, `serviceUrl`). This is the safe default for public deployments. Only set it to `false` for local development or tightly controlled testing.
 
 **4. Run**
 
@@ -1672,8 +1725,12 @@ How it works:
 3. **Summary injection**: When the user returns, the summary is injected as runtime context (one-shot, not persisted) alongside the retained recent suffix.
 4. **Restart-safe resume**: The summary is also mirrored into session metadata so it can still be recovered after a process restart.
 
-> [!TIP]
-> Think of auto compact as "summarize older context, keep the freshest live turns." It is not a hard session reset.
+> [!NOTE]
+> Mental model: "summarize older context, keep the freshest live turns, **and overwrite the session file with the compact form.**" It is not a full `session.clear()`, but it is a write — not a soft cursor move.
+>
+> Concretely, auto compact rewrites `sessions/<key>.jsonl` in place: older messages (including their structured `tool_calls` / `tool_call_id` / `reasoning_content`) are replaced by just the retained recent suffix (currently 8 messages), while the archived prefix is preserved only as a plain-text summary appended to `memory/history.jsonl` (or a `[RAW] ...` flattened dump if LLM summarization fails). The original structured JSON of those turns is no longer recoverable from the session file.
+>
+> This differs from the **token-driven soft consolidation** that fires when a prompt exceeds the context budget: that path only advances an internal `last_consolidated` cursor and leaves the session file untouched, so the raw tool-call trail stays on disk and can still be replayed or audited. If you rely on that trail for debugging or auditing, leave `idleCompactAfterMinutes` at the default `0` and let only the token-driven path run.
 
 ### Timezone
 
@@ -1992,7 +2049,7 @@ By default, the API binds to `127.0.0.1:8900`. You can change this in `config.js
 - Session isolation: pass `"session_id"` in the request body to isolate conversations; omit for a shared default session (`api:default`)
 - Single-message input: each request must contain exactly one `user` message
 - Fixed model: omit `model`, or pass the same model shown by `/v1/models`
-- No streaming: `stream=true` is not supported
+- Streaming: set `stream=true` to receive Server-Sent Events (`text/event-stream`) with OpenAI-compatible delta chunks, terminated by `data: [DONE]`; omit or set `stream=false` for a single JSON response
 - **File uploads**: supports images, PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx) via JSON base64 or `multipart/form-data` (max 10MB per file)
 - API requests run in the synthetic `api` channel, so the `message` tool does **not** automatically deliver to Telegram/Discord/etc. To proactively send to another chat, call `message` with an explicit `channel` and `chat_id` for an enabled channel.
 

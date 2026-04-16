@@ -104,3 +104,33 @@ def test_apply_inclusion_filter_no_matches_removes_all() -> None:
     registry.apply_inclusion_filter(["mcp_nta_*"])
 
     assert registry.tool_names == []
+
+
+def test_get_definitions_returns_cached_result() -> None:
+    registry = ToolRegistry()
+    registry.register(_FakeTool("read_file"))
+    first = registry.get_definitions()
+    assert registry._cached_definitions is not None
+    second = registry.get_definitions()
+    assert first == second
+
+
+def test_register_invalidates_cache() -> None:
+    registry = ToolRegistry()
+    registry.register(_FakeTool("read_file"))
+    first = registry.get_definitions()
+    registry.register(_FakeTool("write_file"))
+    second = registry.get_definitions()
+    assert first is not second
+    assert len(second) == 2
+
+
+def test_unregister_invalidates_cache() -> None:
+    registry = ToolRegistry()
+    registry.register(_FakeTool("read_file"))
+    registry.register(_FakeTool("write_file"))
+    first = registry.get_definitions()
+    registry.unregister("write_file")
+    second = registry.get_definitions()
+    assert first is not second
+    assert len(second) == 1
