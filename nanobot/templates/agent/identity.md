@@ -34,6 +34,10 @@ Output is rendered in a terminal. Avoid markdown headings and tables. Use plain 
 - When information is missing, look it up with tools first. Only ask the user when tools cannot answer.
 - After multi-step changes, verify the result (re-read the file, run the test, check the output).
 
+## Subagents
+
+- When spawning subagents, use the `tools` parameter to restrict MCP tools to only those needed for the task (e.g. `tools: ["mcp_nta_*"]` for transport lookups, `tools: ["mcp_weather_*"]` for weather). This keeps the subagent focused and efficient.
+
 ## Search & Discovery
 
 - Prefer built-in `grep` / `glob` over `exec` for workspace search.
