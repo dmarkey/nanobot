@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlparse
 
 import httpx
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
 from loguru import logger
 
 from nanobot.agent.tools.base import Tool, tool_parameters
@@ -315,10 +316,13 @@ class WebFetchTool(Tool):
         if not is_valid:
             return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False)
 
-        # Detect and fetch images directly to avoid Jina's textual image captioning
+        # Detect and fetch images directly to avoid Jina's textual image captioning.
+        # curl_cffi impersonates Chrome TLS/JA3 to get past basic bot-walls.
         try:
-            async with httpx.AsyncClient(proxy=self.proxy, follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=15.0) as client:
-                async with client.stream("GET", url, headers={"User-Agent": USER_AGENT}) as r:
+            async with CurlAsyncSession(impersonate="chrome", proxy=self.proxy, timeout=15.0) as client:
+                async with client.stream(
+                    "GET", url, allow_redirects=True, max_redirects=MAX_REDIRECTS,
+                ) as r:
                     from nanobot.security.network import validate_resolved_url
 
                     redir_ok, redir_err = validate_resolved_url(str(r.url))
@@ -328,7 +332,7 @@ class WebFetchTool(Tool):
                     ctype = r.headers.get("content-type", "")
                     if ctype.startswith("image/"):
                         r.raise_for_status()
-                        raw = await r.aread()
+                        raw = await r.acontent()
                         return build_image_content_blocks(raw, ctype, url, f"(Image fetched from: {url})")
         except Exception as e:
             logger.debug("Pre-fetch image detection failed for {}: {}", url, e)
@@ -375,17 +379,17 @@ class WebFetchTool(Tool):
             return None
 
     async def _fetch_readability(self, url: str, extract_mode: str, max_chars: int) -> Any:
-        """Local fallback using readability-lxml."""
+        """Local fallback using readability-lxml. Uses curl_cffi with Chrome TLS
+        impersonation to get past basic bot-walls that block plain httpx."""
         from readability import Document
 
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                max_redirects=MAX_REDIRECTS,
-                timeout=30.0,
+            async with CurlAsyncSession(
+                impersonate="chrome",
                 proxy=self.proxy,
+                timeout=30.0,
             ) as client:
-                r = await client.get(url, headers={"User-Agent": USER_AGENT})
+                r = await client.get(url, allow_redirects=True, max_redirects=MAX_REDIRECTS)
                 r.raise_for_status()
 
             from nanobot.security.network import validate_resolved_url
@@ -417,9 +421,6 @@ class WebFetchTool(Tool):
                 "extractor": extractor, "truncated": truncated, "length": len(text),
                 "untrusted": True, "text": text,
             }, ensure_ascii=False)
-        except httpx.ProxyError as e:
-            logger.error("WebFetch proxy error for {}: {}", url, e)
-            return json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False)
         except Exception as e:
             logger.error("WebFetch error for {}: {}", url, e)
             return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)

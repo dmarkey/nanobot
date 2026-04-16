@@ -41,27 +41,43 @@ async def test_web_fetch_blocks_localhost():
 
 
 @pytest.mark.asyncio
-async def test_web_fetch_result_contains_untrusted_flag():
+async def test_web_fetch_result_contains_untrusted_flag(monkeypatch):
     """When fetch succeeds, result JSON must include untrusted=True and the banner."""
     tool = WebFetchTool()
 
     fake_html = "<html><head><title>Test</title></head><body><p>Hello world</p></body></html>"
 
-    import httpx
-
-    class FakeResponse:
+    class FakeHttpxResponse:
         status_code = 200
-        url = "https://example.com/page"
-        text = fake_html
-        headers = {"content-type": "text/html"}
         def raise_for_status(self): pass
         def json(self): return {}
 
-    async def _fake_get(self, url, **kwargs):
-        return FakeResponse()
+    async def _fake_httpx_get(self, url, **kwargs):
+        return FakeHttpxResponse()
+
+    class FakeCurlResponse:
+        status_code = 200
+        url = "https://example.com/page"
+        text = fake_html
+        content = b""
+        headers = {"content-type": "text/html"}
+        def raise_for_status(self): pass
+        def json(self): return {}
+        async def acontent(self): return b""
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+
+    class FakeCurlSession:
+        def __init__(self, *args, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        async def get(self, url, **kwargs): return FakeCurlResponse()
+        def stream(self, method, url, **kwargs): return FakeCurlResponse()
+
+    monkeypatch.setattr("nanobot.agent.tools.web.CurlAsyncSession", FakeCurlSession)
 
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public), \
-         patch("httpx.AsyncClient.get", _fake_get):
+         patch("httpx.AsyncClient.get", _fake_httpx_get):
         result = await tool.execute(url="https://example.com/page")
 
     data = json.loads(result)
@@ -84,13 +100,13 @@ async def test_web_fetch_blocks_private_redirect_before_returning_image(monkeypa
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def aread(self):
+        async def acontent(self):
             return self.content
 
         def raise_for_status(self):
             return None
 
-    class FakeClient:
+    class FakeCurlSession:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -100,10 +116,10 @@ async def test_web_fetch_blocks_private_redirect_before_returning_image(monkeypa
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def stream(self, method, url, headers=None):
+        def stream(self, method, url, **kwargs):
             return FakeStreamResponse()
 
-    monkeypatch.setattr("nanobot.agent.tools.web.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr("nanobot.agent.tools.web.CurlAsyncSession", FakeCurlSession)
 
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public):
         result = await tool.execute(url="https://example.com/image.png")
