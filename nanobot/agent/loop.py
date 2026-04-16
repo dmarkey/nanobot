@@ -599,6 +599,7 @@ class AgentLoop:
                         pending_queue=pending,
                     )
                     if response is not None:
+                        logger.debug("Publishing outbound to {}:{}", response.channel, response.chat_id)
                         await self.bus.publish_outbound(response)
                     elif msg.channel == "cli":
                         await self.bus.publish_outbound(OutboundMessage(
@@ -701,10 +702,13 @@ class AgentLoop:
             self._clear_runtime_checkpoint(session)
             self.sessions.save(session)
             self._schedule_background(self.consolidator.maybe_consolidate_by_tokens(session))
+            response_content = final_content or "Background task completed."
+            preview = response_content[:120] + "..." if len(response_content) > 120 else response_content
+            logger.info("System message response to {}:{}: {}", channel, chat_id, preview)
             return OutboundMessage(
                 channel=channel,
                 chat_id=chat_id,
-                content=final_content or "Background task completed.",
+                content=response_content,
             )
 
         # Extract document text from media at the processing boundary so all

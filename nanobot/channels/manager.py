@@ -210,6 +210,9 @@ class ChannelManager:
                 continue
             except asyncio.CancelledError:
                 break
+            except Exception:
+                logger.exception("Outbound dispatcher error (recovering)")
+                continue
 
     @staticmethod
     async def _send_once(channel: BaseChannel, msg: OutboundMessage) -> None:
