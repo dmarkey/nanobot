@@ -55,6 +55,7 @@ class SubagentManager:
         default_max_iterations: int = 15,
         parent_mcp_tools: ToolRegistry | None = None,
         disabled_tools: list[str] | None = None,
+        disabled_skills: list[str] | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
 
@@ -69,6 +70,7 @@ class SubagentManager:
         self.default_max_iterations = default_max_iterations
         self._parent_mcp_tools = parent_mcp_tools
         self._disabled_tools = disabled_tools or []
+        self.disabled_skills = set(disabled_skills or [])
         self.runner = AgentRunner(provider)
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
@@ -249,7 +251,10 @@ class SubagentManager:
         from nanobot.agent.skills import SkillsLoader
 
         time_ctx = ContextBuilder._build_runtime_context(None, None)
-        skills_summary = SkillsLoader(self.workspace).build_skills_summary()
+        skills_summary = SkillsLoader(
+            self.workspace,
+            disabled_skills=self.disabled_skills,
+        ).build_skills_summary()
         return render_template(
             "agent/subagent_system.md",
             time_ctx=time_ctx,
@@ -270,3 +275,11 @@ class SubagentManager:
     def get_running_count(self) -> int:
         """Return the number of currently running subagents."""
         return len(self._running_tasks)
+
+    def get_running_count_by_session(self, session_key: str) -> int:
+        """Return the number of currently running subagents for a session."""
+        tids = self._session_tasks.get(session_key, set())
+        return sum(
+            1 for tid in tids
+            if tid in self._running_tasks and not self._running_tasks[tid].done()
+        )

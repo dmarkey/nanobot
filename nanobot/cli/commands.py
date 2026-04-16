@@ -591,6 +591,7 @@ def serve(
         channels_config=runtime_config.channels,
         timezone=runtime_config.agents.defaults.timezone,
         unified_session=runtime_config.agents.defaults.unified_session,
+        disabled_skills=runtime_config.agents.defaults.disabled_skills,
         session_ttl_minutes=runtime_config.agents.defaults.session_ttl_minutes,
     )
 
@@ -688,6 +689,7 @@ def gateway(
         subagent_disabled_tools=config.agents.subagent_disabled_tools,
         timezone=config.agents.defaults.timezone,
         unified_session=config.agents.defaults.unified_session,
+        disabled_skills=config.agents.defaults.disabled_skills,
         session_ttl_minutes=config.agents.defaults.session_ttl_minutes,
     )
 
@@ -731,7 +733,7 @@ def gateway(
         response = resp.content if resp else ""
 
         message_tool = agent.tools.get("message")
-        if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
+        if job.payload.deliver and isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
             return response
 
         if job.payload.deliver and job.payload.to and response:
@@ -823,7 +825,7 @@ def gateway(
 
     console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
 
-    # Create webhook server
+    # Create webhook server (also serves /health on the gateway port).
     gw = config.gateway
     webhook = WebhookServer(
         bus=bus,
@@ -834,8 +836,10 @@ def gateway(
         default_chat_id=gw.webhook_chat_id,
     )
     console.print(f"[green]✓[/green] Webhook: http://{gw.host}:{gw.port}/notify")
+    console.print(f"[green]✓[/green] Health endpoint: http://{gw.host}:{gw.port}/health")
     if webhook.ephemeral:
         console.print(f"  [dim]Token (ephemeral): {webhook.secret}[/dim]")
+
 
     # Register Dream system job (always-on, idempotent on restart)
     dream_cfg = config.agents.defaults.dream
@@ -940,6 +944,7 @@ def agent(
         subagent_disabled_tools=config.agents.subagent_disabled_tools,
         timezone=config.agents.defaults.timezone,
         unified_session=config.agents.defaults.unified_session,
+        disabled_skills=config.agents.defaults.disabled_skills,
         session_ttl_minutes=config.agents.defaults.session_ttl_minutes,
     )
     restart_notice = consume_restart_notice_from_env()
@@ -984,7 +989,7 @@ def agent(
         # Interactive mode — route through bus like other channels
         from nanobot.bus.events import InboundMessage
         _init_prompt_session()
-        console.print(f"{__logo__} Interactive mode (type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit)\n")
+        console.print(f"{__logo__} Interactive mode [bold blue]({config.agents.defaults.model})[/bold blue] — type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n")
 
         if ":" in session_id:
             cli_channel, cli_chat_id = session_id.split(":", 1)

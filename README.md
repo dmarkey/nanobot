@@ -69,7 +69,20 @@ This is a fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot) with the fol
 
 ## 📢 News
 
+- **2026-04-14** 🚀 Released **v0.1.5.post1** — Dream skill discovery, mid-turn follow-up injection, WebSocket channel, and deeper channel integrations. Please see [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.5.post1) for details.
+- **2026-04-13** 🛡️ Agent turn hardened — user messages persisted early, auto-compact skips active tasks.
+- **2026-04-12** 🔒 Lark global domain support, Dream learns discovered skills, shell sandbox tightened.
+- **2026-04-11** ⚡ Context compact shrinks sessions on the fly; Kagi web search; QQ & WeCom full media.
+- **2026-04-10** 📓 Notebook editing tool, multiple MCP servers, Feishu streaming & done-emoji.
+- **2026-04-09** 🔌 WebSocket channel, unified cross-channel session, `disabled_skills` config.
+- **2026-04-08** 📤 API file uploads, OpenAI reasoning auto-routing with Responses fallback.
+- **2026-04-07** 🧠 Anthropic adaptive thinking, MCP resources & prompts exposed as tools.
+- **2026-04-06** 🛰️ Langfuse observability, unified Whisper transcription, email attachments.
 - **2026-04-05** 🚀 Released **v0.1.5** — sturdier long-running tasks, Dream two-stage memory, production-ready sandboxing and programming Agent SDK. Please see [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.5) for details.
+
+<details>
+<summary>Earlier news</summary>
+
 - **2026-04-04** 🚀 Jinja2 response templates, Dream memory hardened, smarter retry handling.
 - **2026-04-03** 🧠 Xiaomi MiMo provider, chain-of-thought reasoning visible, Telegram UX polish.
 - **2026-04-02** 🧱 Long-running tasks run more reliably — core runtime hardening.
@@ -79,11 +92,6 @@ This is a fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot) with the fol
 - **2026-03-29** 💬 WeChat voice, typing, QR/media resilience; fixed-session OpenAI-compatible API.
 - **2026-03-28** 📚 Provider docs refresh; skill template wording fix.
 - **2026-03-27** 🚀 Released **v0.1.4.post6** — architecture decoupling, litellm removal, end-to-end streaming, WeChat channel, and a security fix. Please see [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.4.post6) for details.
-
-
-<details>
-<summary>Earlier news</summary>
-
 - **2026-03-26** 🏗️ Agent runner extracted and lifecycle hooks unified; stream delta coalescing at boundaries.
 - **2026-03-25** 🌏 StepFun provider, configurable timezone, Gemini thought signatures.
 - **2026-03-24** 🔧 WeChat compatibility, Feishu CardKit streaming, test suite restructured.
@@ -619,7 +627,8 @@ Uses **WebSocket** long connection — no public IP required.
       "reactEmoji": "OnIt",
       "doneEmoji": "DONE",
       "toolHintPrefix": "🔧",
-      "streaming": true
+      "streaming": true,
+      "domain": "feishu"
     }
   }
 }
@@ -632,6 +641,7 @@ Uses **WebSocket** long connection — no public IP required.
 > `reactEmoji`: Emoji for "processing" status (default: `OnIt`). See [available emojis](https://open.larkoffice.com/document/server-docs/im-v1/message-reaction/emojis-introduce).
 > `doneEmoji`: Optional emoji for "completed" status (e.g., `DONE`, `OK`, `HEART`). When set, bot adds this reaction after removing `reactEmoji`.
 > `toolHintPrefix`: Prefix for inline tool hints in streaming cards (default: `🔧`).
+> `domain`: `"feishu"` (default) for China (open.feishu.cn), `"lark"` for international Lark (open.larksuite.com).
 
 **3. Run**
 
@@ -976,6 +986,7 @@ IMAP_PASSWORD=your-password-here
 > - **Voice transcription**: Voice messages (Telegram, WhatsApp) are automatically transcribed using Whisper. By default Groq is used (free tier). Set `"transcriptionProvider": "openai"` under `channels` to use OpenAI Whisper instead — the API key is picked from the matching provider config.
 > - **MiniMax Coding Plan**: Exclusive discount links for the nanobot community: [Overseas](https://platform.minimax.io/subscribe/coding-plan?code=9txpdXw04g&source=link) · [Mainland China](https://platform.minimaxi.com/subscribe/token-plan?code=GILTJpMTqZ&source=link)
 > - **MiniMax (Mainland China)**: If your API key is from MiniMax's mainland China platform (minimaxi.com), set `"apiBase": "https://api.minimaxi.com/v1"` in your minimax provider config.
+> - **MiniMax thinking mode**: Use `providers.minimaxAnthropic` when you want `reasoningEffort` / thinking mode. MiniMax exposes that capability through its Anthropic-compatible endpoint, so nanobot keeps it as a separate provider instead of guessing MiniMax-specific thinking parameters on the generic OpenAI-compatible `minimax` endpoint. It uses the same `MINIMAX_API_KEY`. Default Anthropic-compatible base URL: `https://api.minimax.io/anthropic`; for mainland China use `https://api.minimaxi.com/anthropic`.
 > - **VolcEngine / BytePlus Coding Plan**: Use dedicated providers `volcengineCodingPlan` or `byteplusCodingPlan` instead of the pay-per-use `volcengine` / `byteplus` providers.
 > - **Zhipu Coding Plan**: If you're on Zhipu's coding plan, set `"apiBase": "https://open.bigmodel.cn/api/coding/paas/v4"` in your zhipu provider config.
 > - **Alibaba Cloud BaiLian**: If you're using Alibaba Cloud BaiLian's OpenAI-compatible endpoint, set `"apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1"` in your dashscope provider config.
@@ -993,6 +1004,7 @@ IMAP_PASSWORD=your-password-here
 | `deepseek` | LLM (DeepSeek direct) | [platform.deepseek.com](https://platform.deepseek.com) |
 | `groq` | LLM + Voice transcription (Whisper, default) | [console.groq.com](https://console.groq.com) |
 | `minimax` | LLM (MiniMax direct) | [platform.minimaxi.com](https://platform.minimaxi.com) |
+| `minimax_anthropic` | LLM (MiniMax Anthropic-compatible endpoint, thinking mode) | [platform.minimaxi.com](https://platform.minimaxi.com) |
 | `gemini` | LLM (Gemini direct) | [aistudio.google.com](https://aistudio.google.com) |
 | `aihubmix` | LLM (API gateway, access to all models) | [aihubmix.com](https://aihubmix.com) |
 | `siliconflow` | LLM (SiliconFlow/硅基流动) | [siliconflow.cn](https://siliconflow.cn) |
@@ -1001,6 +1013,7 @@ IMAP_PASSWORD=your-password-here
 | `zhipu` | LLM (Zhipu GLM) | [open.bigmodel.cn](https://open.bigmodel.cn) |
 | `mimo` | LLM (MiMo) | [platform.xiaomimimo.com](https://platform.xiaomimimo.com) |
 | `ollama` | LLM (local, Ollama) | — |
+| `lm_studio` | LLM (local, LM Studio) | — |
 | `mistral` | LLM | [docs.mistral.ai](https://docs.mistral.ai/) |
 | `stepfun` | LLM (Step Fun/阶跃星辰) | [platform.stepfun.com](https://platform.stepfun.com) |
 | `ovms` | LLM (local, OpenVINO Model Server) | [docs.openvino.ai](https://docs.openvino.ai/2026/model-server/ovms_docs_llm_quickstart.html) |
@@ -1089,7 +1102,7 @@ nanobot agent -c ~/.nanobot-telegram/config.json -w /tmp/nanobot-telegram-test -
 <details>
 <summary><b>Custom Provider (Any OpenAI-compatible API)</b></summary>
 
-Connects directly to any OpenAI-compatible endpoint — LM Studio, llama.cpp, Together AI, Fireworks, Azure OpenAI, or any self-hosted server. Model name is passed as-is.
+Connects directly to any OpenAI-compatible endpoint — llama.cpp, Together AI, Fireworks, Azure OpenAI, or any self-hosted server. Model name is passed as-is.
 
 ```json
 {
@@ -1107,7 +1120,31 @@ Connects directly to any OpenAI-compatible endpoint — LM Studio, llama.cpp, To
 }
 ```
 
-> For local servers that don't require a key, set `apiKey` to any non-empty string (e.g. `"no-key"`).
+> For local servers that don't require authentication, set `apiKey` to `null`.
+>
+> `custom` is the right choice for providers that expose an OpenAI-compatible **chat completions** API. It does **not** force third-party endpoints onto the OpenAI/Azure **Responses API**.
+>
+> If your proxy or gateway is specifically Responses-API-compatible, use the `azure_openai` provider shape instead and point `apiBase` at that endpoint:
+>
+> ```json
+> {
+>   "providers": {
+>     "azure_openai": {
+>       "apiKey": "your-api-key",
+>       "apiBase": "https://api.your-provider.com",
+>       "defaultModel": "your-model-name"
+>     }
+>   },
+>   "agents": {
+>     "defaults": {
+>       "provider": "azure_openai",
+>       "model": "your-model-name"
+>     }
+>   }
+> }
+> ```
+>
+> In short: **chat-completions-compatible endpoint → `custom`**; **Responses-compatible endpoint → `azure_openai`**.
 
 </details>
 
@@ -1139,6 +1176,40 @@ ollama run llama3.2
 ```
 
 > `provider: "auto"` also works when `providers.ollama.apiBase` is configured, but setting `"provider": "ollama"` is the clearest option.
+
+</details>
+
+<details>
+<summary><b>LM Studio (local)</b></summary>
+
+[LM Studio](https://lmstudio.ai/) provides a local OpenAI-compatible server for running LLMs. Download models through the LM Studio UI, then start the local server.
+
+**1. Start LM Studio server:**
+- Launch LM Studio
+- Go to the "Local Server" tab
+- Load a model (e.g., Llama, Mistral, Qwen)
+- Click "Start Server" (default port: 1234)
+
+**2. Add to config** (partial — merge into `~/.nanobot/config.json`):
+```json
+{
+  "providers": {
+    "lm_studio": {
+      "apiKey": null,
+      "apiBase": "http://localhost:1234/v1"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "provider": "lm_studio",
+      "model": "local-model"
+    }
+  }
+}
+```
+
+> **Note:** Set `apiKey` to `null` for LM Studio since it runs locally and doesn't require authentication. The model name should match what's shown in the LM Studio UI.
+> `provider: "auto"` also works when `providers.lm_studio.apiBase` is configured, but setting `"provider": "lm_studio"` is the clearest option.
 
 </details>
 
@@ -1229,12 +1300,12 @@ vllm serve meta-llama/Llama-3.1-8B-Instruct --port 8000
 
 **2. Add to config** (partial — merge into `~/.nanobot/config.json`):
 
-*Provider (key can be any non-empty string for local):*
+*Provider (set API key to null for local servers):*
 ```json
 {
   "providers": {
     "vllm": {
-      "apiKey": "dummy",
+      "apiKey": null,
       "apiBase": "http://localhost:8000/v1"
     }
   }
@@ -1652,6 +1723,26 @@ When enabled, all incoming messages — regardless of which channel they arrive 
 
 > This is designed for single-user, multi-device setups. It is **off by default** — existing users see zero behavior change.
 
+### Disabled Skills
+
+nanobot ships with built-in skills, and your workspace can also define custom skills under `skills/`. If you want to hide specific skills from the agent, set `agents.defaults.disabledSkills` to a list of skill directory names:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "disabledSkills": ["github", "weather"]
+    }
+  }
+}
+```
+
+Disabled skills are excluded from the main agent's skill summary, from always-on skill injection, and from subagent skill summaries. This is useful when some bundled skills are unnecessary for your deployment or should not be exposed to end users.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `agents.defaults.disabledSkills` | `[]` | List of skill directory names to exclude from loading. Applies to both built-in skills and workspace skills. |
+
 ## 🧩 Multiple Instances
 
 Run multiple nanobot instances simultaneously with separate configs and runtime data. Use `--config` as the main entrypoint. Optionally pass `--workspace` during `onboard` when you want to initialize or update the saved workspace for a specific instance.
@@ -1738,6 +1829,7 @@ Example config:
     }
   },
   "gateway": {
+    "host": "127.0.0.1",
     "port": 18790
   }
 }
@@ -1749,6 +1841,14 @@ Start separate instances:
 nanobot gateway --config ~/.nanobot-telegram/config.json
 nanobot gateway --config ~/.nanobot-discord/config.json
 ```
+
+Each gateway instance also exposes a lightweight HTTP health endpoint on
+`gateway.host:gateway.port`. By default, the gateway binds to `127.0.0.1`,
+so the endpoint stays local unless you explicitly set `gateway.host` to a
+public or LAN-facing address.
+
+- `GET /health` returns `{"status":"ok"}`
+- Other paths return `404`
 
 Override workspace for one-off runs when needed:
 
@@ -1777,6 +1877,7 @@ time.
 
 - `memory/history.jsonl` stores append-only summarized history
 - `SOUL.md`, `USER.md`, and `memory/MEMORY.md` store long-term knowledge managed by Dream
+- `Dream` can also promote repeated workflows into reusable workspace skills under `skills/`
 - `Dream` runs on a schedule and can also be triggered manually
 - memory changes can be inspected and restored with built-in commands
 
@@ -1892,6 +1993,20 @@ By default, the API binds to `127.0.0.1:8900`. You can change this in `config.js
 - Single-message input: each request must contain exactly one `user` message
 - Fixed model: omit `model`, or pass the same model shown by `/v1/models`
 - No streaming: `stream=true` is not supported
+- **File uploads**: supports images, PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx) via JSON base64 or `multipart/form-data` (max 10MB per file)
+- API requests run in the synthetic `api` channel, so the `message` tool does **not** automatically deliver to Telegram/Discord/etc. To proactively send to another chat, call `message` with an explicit `channel` and `chat_id` for an enabled channel.
+
+Example tool call for cross-channel delivery from an API session:
+
+```json
+{
+  "content": "Build finished successfully.",
+  "channel": "telegram",
+  "chat_id": "123456789"
+}
+```
+
+If `channel` points to a channel that is not enabled in your config, nanobot will queue the outbound event but no platform delivery will occur.
 
 ### Endpoints
 
@@ -1909,6 +2024,44 @@ curl http://127.0.0.1:8900/v1/chat/completions \
     "session_id": "my-session"
   }'
 ```
+
+### File Upload (JSON base64)
+
+Send images inline using the OpenAI multimodal content format:
+
+```bash
+curl http://127.0.0.1:8900/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": [
+      {"type": "text", "text": "Describe this image"},
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR..."}}
+    ]}]
+  }'
+```
+
+### File Upload (multipart/form-data)
+
+Upload any supported file type (images, PDF, Word, Excel, PPT) via multipart:
+
+```bash
+# Single file
+curl http://127.0.0.1:8900/v1/chat/completions \
+  -F "message=Summarize this report" \
+  -F "files=@report.docx"
+
+# Multiple files with session isolation
+curl http://127.0.0.1:8900/v1/chat/completions \
+  -F "message=Compare these files" \
+  -F "files=@chart.png" \
+  -F "files=@data.xlsx" \
+  -F "session_id=my-session"
+```
+
+Supported file types:
+- **Images**: PNG, JPEG, GIF, WebP (sent to AI as base64 for vision analysis)
+- **Documents**: PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx) (text extracted and sent to AI)
+- **Text**: TXT, Markdown, CSV, JSON, etc. (read directly)
 
 ### Python (`requests`)
 

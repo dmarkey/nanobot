@@ -257,6 +257,28 @@ def test_config_accepts_camel_case_explicit_provider_name_for_coding_plan():
     assert config.get_api_base() == "https://ark.cn-beijing.volces.com/api/coding/v3"
 
 
+def test_config_accepts_lm_studio_without_api_key_and_uses_default_localhost_api_base():
+    config = Config.model_validate(
+        {
+            "agents": {
+                "defaults": {
+                    "provider": "lm_studio",
+                    "model": "local-model",
+                }
+            },
+            "providers": {
+                "lmStudio": {
+                    "apiKey": None,
+                }
+            },
+        }
+    )
+
+    assert config.get_provider_name() == "lm_studio"
+    assert config.get_api_key() is None
+    assert config.get_api_base() == "http://localhost:1234/v1"
+
+
 def test_find_by_name_accepts_camel_case_and_hyphen_aliases():
     assert find_by_name("volcengineCodingPlan") is not None
     assert find_by_name("volcengineCodingPlan").name == "volcengine_coding_plan"
@@ -1124,6 +1146,36 @@ def test_gateway_cli_port_overrides_configured_port(monkeypatch, tmp_path: Path)
 
     assert isinstance(result.exception, _StopGatewayError)
     assert "port 18792" in result.stdout
+
+
+def test_webhook_server_serves_health_endpoint() -> None:
+    """WebhookServer exposes /health that returns {"status": "ok"}."""
+    from aiohttp.test_utils import AioHTTPTestCase, TestServer
+    from nanobot.api.webhook import WebhookServer
+    from nanobot.bus.queue import MessageBus
+
+    ws = WebhookServer(bus=MessageBus(), host="127.0.0.1", port=0)
+    # Build the aiohttp app directly to test the handler
+    from aiohttp import web
+
+    app = web.Application()
+    app.router.add_get("/health", ws._handle_health)
+
+    async def _test():
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"http://127.0.0.1:{port}/health") as resp:
+                assert resp.status == 200
+                body = await resp.json()
+                assert body == {"status": "ok"}
+        await runner.cleanup()
+
+    asyncio.run(_test())
 
 
 def test_serve_uses_api_config_defaults_and_workspace_override(
