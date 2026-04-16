@@ -71,3 +71,36 @@ def test_prepare_call_other_tools_keep_generic_object_validation() -> None:
     assert tool is not None
     assert params == ["TODO"]
     assert error == "Error: Invalid parameters for tool 'grep': parameters must be an object, got list"
+
+
+def test_apply_inclusion_filter_keeps_matching_tools() -> None:
+    registry = ToolRegistry()
+    registry.register(_FakeTool("read_file"))
+    registry.register(_FakeTool("mcp_nta_get_departures"))
+    registry.register(_FakeTool("mcp_nta_search_routes"))
+    registry.register(_FakeTool("mcp_weather_get_current"))
+    registry.register(_FakeTool("mcp_power_summary"))
+
+    registry.apply_inclusion_filter(["mcp_nta_*", "read_file"])
+
+    assert sorted(registry.tool_names) == ["mcp_nta_get_departures", "mcp_nta_search_routes", "read_file"]
+
+
+def test_apply_inclusion_filter_empty_patterns_keeps_all() -> None:
+    registry = ToolRegistry()
+    registry.register(_FakeTool("read_file"))
+    registry.register(_FakeTool("mcp_nta_get_departures"))
+
+    registry.apply_inclusion_filter([])
+
+    assert sorted(registry.tool_names) == ["mcp_nta_get_departures", "read_file"]
+
+
+def test_apply_inclusion_filter_no_matches_removes_all() -> None:
+    registry = ToolRegistry()
+    registry.register(_FakeTool("mcp_weather_get_current"))
+    registry.register(_FakeTool("mcp_power_summary"))
+
+    registry.apply_inclusion_filter(["mcp_nta_*"])
+
+    assert registry.tool_names == []

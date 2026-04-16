@@ -133,3 +133,16 @@ class ToolRegistry:
             logger.info("Tool '{}' disabled by filter", name)
         if not to_remove:
             logger.warning("Disabled tool filter matched nothing: patterns={}", patterns)
+
+    def apply_inclusion_filter(self, patterns: list[str]) -> None:
+        """Keep only tools whose names match at least one pattern (exact or glob). Others are removed."""
+        if not patterns:
+            return
+        to_remove = [
+            name for name in self._tools
+            if not any(fnmatch(name, p) for p in patterns)
+        ]
+        for name in to_remove:
+            del self._tools[name]
+        kept = len(self._tools) - 0  # all remaining are kept
+        logger.info("Inclusion filter kept {} tools, removed {}: patterns={}", len(self._tools), len(to_remove), patterns)

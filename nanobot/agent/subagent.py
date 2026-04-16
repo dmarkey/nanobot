@@ -82,6 +82,7 @@ class SubagentManager:
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
         session_key: str | None = None,
+        tool_filter: list[str] | None = None,
     ) -> str:
         """Spawn a subagent to execute a task in the background."""
         task_id = str(uuid.uuid4())[:8]
@@ -89,7 +90,7 @@ class SubagentManager:
         origin = {"channel": origin_channel, "chat_id": origin_chat_id}
 
         bg_task = asyncio.create_task(
-            self._run_subagent(task_id, task, display_label, origin)
+            self._run_subagent(task_id, task, display_label, origin, tool_filter=tool_filter)
         )
         self._running_tasks[task_id] = bg_task
         if session_key:
@@ -113,6 +114,7 @@ class SubagentManager:
         task: str,
         label: str,
         origin: dict[str, str],
+        tool_filter: list[str] | None = None,
     ) -> None:
         """Execute the subagent task and announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
@@ -145,6 +147,8 @@ class SubagentManager:
                     if tool:
                         tools.register(tool)
                         logger.debug("Subagent [{}]: shared MCP tool '{}'", task_id, name)
+            if tool_filter:
+                tools.apply_inclusion_filter(tool_filter)
             tools.apply_disabled_filter(self._disabled_tools)
             system_prompt = self._build_subagent_prompt()
             messages: list[dict[str, Any]] = [
