@@ -41,6 +41,8 @@ class ChannelManager:
 
         transcription_provider = self.config.channels.transcription_provider
         transcription_key = self._resolve_transcription_key(transcription_provider)
+        transcription_base = self._resolve_transcription_base(transcription_provider)
+        zhipu_key = self._resolve_zhipu_key()
 
         for name, cls in discover_all().items():
             section = getattr(self.config.channels, name, None)
@@ -57,6 +59,8 @@ class ChannelManager:
                 channel = cls(section, self.bus)
                 channel.transcription_provider = transcription_provider
                 channel.transcription_api_key = transcription_key
+                channel.transcription_api_base = transcription_base
+                channel.zhipu_api_key = zhipu_key
                 self.channels[name] = channel
                 logger.info("{} channel enabled", cls.display_name)
             except Exception as e:
@@ -86,6 +90,22 @@ class ChannelManager:
             if provider == "openai":
                 return self.config.providers.openai.api_key
             return self.config.providers.groq.api_key
+        except AttributeError:
+            return ""
+
+    def _resolve_transcription_base(self, provider: str) -> str:
+        """Pick the API base URL for the configured transcription provider."""
+        try:
+            if provider == "openai":
+                return self.config.providers.openai.api_base or ""
+            return self.config.providers.groq.api_base or ""
+        except AttributeError:
+            return ""
+
+    def _resolve_zhipu_key(self) -> str:
+        """Return configured Zhipu API key (used by ESPHome STT)."""
+        try:
+            return self.config.providers.zhipu.api_key or ""
         except AttributeError:
             return ""
 
