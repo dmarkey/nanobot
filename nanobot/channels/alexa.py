@@ -12,12 +12,11 @@ import base64
 import hashlib
 import time
 from datetime import datetime, timezone
-from typing import Any
 from urllib.parse import urlparse
 
 from aiohttp import ClientSession, web
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from loguru import logger

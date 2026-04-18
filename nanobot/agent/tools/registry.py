@@ -152,5 +152,4 @@ class ToolRegistry:
         ]
         for name in to_remove:
             del self._tools[name]
-        kept = len(self._tools) - 0  # all remaining are kept
         logger.info("Inclusion filter kept {} tools, removed {}: patterns={}", len(self._tools), len(to_remove), patterns)
