@@ -711,6 +711,7 @@ class AgentLoop:
                 self.sessions.save(session)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             history = session.get_history(max_messages=0)
+            current_role = "assistant" if is_subagent else "user"
 
             # Subagent content is already in `history` above; passing it again
             # as current_message would double-project it into the prompt.
@@ -720,7 +721,7 @@ class AgentLoop:
                 channel=channel,
                 chat_id=chat_id,
                 session_summary=pending,
-                current_role="user",
+                current_role=current_role,
             )
             final_content, _, all_msgs, _, _ = await self._run_agent_loop(
                 messages, session=session, channel=channel, chat_id=chat_id,
