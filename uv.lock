@@ -1948,7 +1948,7 @@ dependencies = [
     { name = "python-docx" },
     { name = "python-pptx" },
     { name = "python-socketio" },
-    { name = "python-socks" },
+    { name = "python-socks", marker = "sys_platform != 'win32'" },
     { name = "python-telegram-bot", extra = ["socks"] },
     { name = "pyyaml" },
     { name = "qq-botpy" },
@@ -1983,7 +1983,7 @@ langsmith = [
     { name = "langsmith" },
 ]
 matrix = [
-    { name = "matrix-nio", extra = ["e2e"] },
+    { name = "matrix-nio", extra = ["e2e"], marker = "sys_platform != 'win32'" },
     { name = "mistune" },
     { name = "nh3" },
 ]
@@ -2029,7 +2029,7 @@ requires-dist = [
     { name = "langsmith", marker = "extra == 'langsmith'", specifier = ">=0.1.0" },
     { name = "lark-oapi", specifier = ">=1.5.0,<2.0.0" },
     { name = "loguru", specifier = ">=0.7.3,<1.0.0" },
-    { name = "matrix-nio", extras = ["e2e"], marker = "extra == 'matrix'", specifier = ">=0.25.2" },
+    { name = "matrix-nio", extras = ["e2e"], marker = "sys_platform != 'win32' and extra == 'matrix'", specifier = ">=0.25.2" },
     { name = "mcp", specifier = ">=1.26.0,<2.0.0" },
     { name = "mistune", marker = "extra == 'matrix'", specifier = ">=3.0.0,<4.0.0" },
     { name = "msgpack", specifier = ">=1.1.0,<2.0.0" },
@@ -2052,7 +2052,7 @@ requires-dist = [
     { name = "python-docx", specifier = ">=1.1.0,<2.0.0" },
     { name = "python-pptx", specifier = ">=1.0.0,<2.0.0" },
     { name = "python-socketio", specifier = ">=5.16.0,<6.0.0" },
-    { name = "python-socks", extras = ["asyncio"], specifier = ">=2.8.0,<3.0.0" },
+    { name = "python-socks", extras = ["asyncio"], marker = "sys_platform != 'win32'", specifier = ">=2.8.0,<3.0.0" },
     { name = "python-telegram-bot", extras = ["socks"], specifier = ">=22.6,<23.0" },
     { name = "pyyaml", specifier = ">=6.0,<7.0.0" },
     { name = "qq-botpy", specifier = ">=1.2.0,<2.0.0" },
