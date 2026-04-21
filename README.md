@@ -1,3 +1,5 @@
+![cover-v5-optimized](./images/GitHub_README.png)
+
 <div align="center">
   <img src="nanobot_logo.png" alt="nanobot" width="500">
   <h1>nanobot-tng: Ultra-Lightweight Personal AI Agent</h1>
@@ -7,18 +9,20 @@
     <a href="https://pepy.tech/project/nanobot-ai-tng"><img src="https://static.pepy.tech/badge/nanobot-ai-tng" alt="Downloads"></a>
     <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-    <a href="https://nanobot.wiki/docs/0.1.5/getting-started/nanobot-overview"><img src="https://img.shields.io/badge/Docs-nanobot.wiki-blue?style=flat&logo=readthedocs&logoColor=white" alt="Docs"></a>
+    <a href="https://github.com/HKUDS/nanobot/graphs/commit-activity" target="_blank">
+        <img alt="Commits last month" src="https://img.shields.io/github/commit-activity/m/HKUDS/nanobot?labelColor=%20%2332b583&color=%20%2312b76a"></a>
+    <a href="https://github.com/HKUDS/nanobot/issues?q=is%3Aissue%20is%3Aclosed" target="_blank">
+        <img alt="Issues closed" src="https://img.shields.io/github/issues-search?query=repo%3AHKUDS%2Fnanobot%20is%3Aissue%20is%3Aclosed&label=issues%20closed&labelColor=%20%237d89b0&color=%20%235d6b98"></a>
+    <a href="https://twitter.com/intent/follow?screen_name=nanobot_project" target="_blank">
+        <img src="https://img.shields.io/twitter/follow/nanobot_project?logo=X&color=%20%23f5f5f5" alt="follow on X(Twitter)"></a>
+    <a href="https://nanobot.wiki/docs/latest/getting-started/nanobot-overview"><img src="https://img.shields.io/badge/Docs-nanobot.wiki-blue?style=flat&logo=readthedocs&logoColor=white" alt="Docs"></a>
     <a href="./COMMUNICATION.md"><img src="https://img.shields.io/badge/Feishu-Group-E9DBFC?style=flat&logo=feishu&logoColor=white" alt="Feishu"></a>
     <a href="./COMMUNICATION.md"><img src="https://img.shields.io/badge/WeChat-Group-C5EAB4?style=flat&logo=wechat&logoColor=white" alt="WeChat"></a>
     <a href="https://discord.gg/MnCvHqpUGB"><img src="https://img.shields.io/badge/Discord-Community-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
 </div>
 
-🐈 **nanobot** is an **ultra-lightweight** personal AI agent inspired by [OpenClaw](https://github.com/openclaw/openclaw).
-
-⚡️ Delivers core agent functionality with **99% fewer lines of code**.
-
-📏 Real-time line count: run `bash core_agent_lines.sh` to verify anytime.
+🐈 **nanobot** is an open-source and ultra-lightweight AI agent in the spirit of [OpenClaw](https://github.com/openclaw/openclaw), [Claude Code](https://www.anthropic.com/claude-code), and [Codex](https://www.openai.com/codex/). It keeps the core agent loop small and readable while still supporting chat channels, memory, MCP and practical deployment paths, so you can go from local setup to a long-running personal agent with minimal overhead.
 
 ## 🍴 Fork Changes
 
@@ -148,46 +152,119 @@ This is a fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot) with the fol
 
 </details>
 
-> 🐈 nanobot is for educational, research, and technical exchange purposes only. It is unrelated to crypto and does not involve any official token or coin.
 
-## Key Features of nanobot:
+## 💡 Key Features of nanobot
 
-🪶 **Ultra-Lightweight**: A lightweight implementation built for stable, long-running AI agents.
+- **Ultra-lightweight**: stable long-running agent behavior with a small, readable core.
+- **Research-ready**: the codebase is intentionally simple enough to study, modify, and extend.
+- **Practical**: chat channels, API, memory, MCP, and deployment paths are already built in.
+- **Hackable**: you can start fast, then go deeper through repo docs instead of a monolithic landing page.
 
-🔬 **Research-Ready**: Clean, readable code that's easy to understand, modify, and extend for research.
+## 📦 Install
 
-⚡️ **Lightning Fast**: Minimal footprint means faster startup, lower resource usage, and quicker iterations.
+> [!IMPORTANT]
+> If you want the newest features and experiments, install from source. 
+> 
+> If you want the most stable day-to-day experience, install from PyPI or with `uv`.
 
-💎 **Easy-to-Use**: One-click to deploy and you're ready to go.
+**Install from source**
+
+```bash
+git clone https://github.com/HKUDS/nanobot.git
+cd nanobot
+pip install -e .
+```
+
+**Install with `uv`**
+
+```bash
+uv tool install nanobot-ai
+```
+
+**Install from PyPI**
+
+```bash
+pip install nanobot-ai
+```
+
+## 🚀 Quick Start
+
+**1. Initialize**
+
+```bash
+nanobot onboard
+```
+
+**2. Configure** (`~/.nanobot/config.json`)
+
+Configure these **two parts** in your config (other options have defaults). Add or merge the following blocks into your existing config instead of replacing the whole file.
+
+*Set your API key* (e.g. [OpenRouter](https://openrouter.ai/keys), recommended for global users):
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "apiKey": "sk-or-v1-xxx"
+    }
+  }
+}
+```
+
+*Set your model* (optionally pin a provider — defaults to auto-detection):
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "provider": "openrouter",
+      "model": "anthropic/claude-opus-4-6"
+    }
+  }
+}
+```
+
+**3. Chat**
+
+```bash
+nanobot agent
+```
+
+
+- Want different LLM providers, web search, MCP, security settings, or more config options? See [Configuration](./docs/configuration.md)
+- Want to run nanobot in chat apps like Telegram, Discord, WeChat or Feishu? See [Chat Apps](./docs/chat-apps.md)
+- Want Docker or Linux service deployment? See [Deployment](./docs/deployment.md)
+
+## 🧪 WebUI (Development)
+
+> [!NOTE]
+> The WebUI development workflow currently requires a source checkout and is not yet shipped together with the official packaged release. See [WebUI Document](./webui/README.md) for full WebUI development docs and build steps.
+
+<p align="center">
+  <img src="images/nanobot_webui.png" alt="nanobot webui preview" width="900">
+</p>
+
+**1. Start the gateway**
+
+```bash
+nanobot gateway
+```
+
+**2. Start the webui dev server**
+
+```bash
+cd webui
+bun install
+bun run dev
+```
 
 ## 🏗️ Architecture
 
 <p align="center">
-  <img src="nanobot_arch.png" alt="nanobot architecture" width="800">
+  <img src="images/nanobot_arch.png" alt="nanobot architecture" width="800">
 </p>
 
-## Table of Contents
-
-- [News](#-news)
-- [Key Features](#key-features-of-nanobot)
-- [Architecture](#️-architecture)
-- [Features](#-features)
-- [Install](#-install)
-- [Quick Start](#-quick-start)
-- [Chat Apps](#-chat-apps)
-- [Agent Social Network](#-agent-social-network)
-- [Configuration](#️-configuration)
-- [Multiple Instances](#-multiple-instances)
-- [Memory](#-memory)
-- [CLI Reference](#-cli-reference)
-- [In-Chat Commands](#-in-chat-commands)
-- [Python SDK](#-python-sdk)
-- [OpenAI-Compatible API](#-openai-compatible-api)
-- [Docker](#-docker)
-- [Linux Service](#-linux-service)
-- [Project Structure](#-project-structure)
-- [Contribute & Roadmap](#-contribute--roadmap)
-- [Star History](#-star-history)
+🐈 nanobot stays lightweight by centering everything around a small agent loop: messages come in from chat apps, the LLM decides when tools are needed, and memory or skills are pulled in only as context instead of becoming a heavy orchestration layer. That keeps the core path readable and easy to extend, while still letting you add channels, tools, memory, and deployment options without turning the system into a monolith.
 
 ## ✨ Features
 
@@ -212,7 +289,9 @@ This is a fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot) with the fol
   </tr>
 </table>
 
-## 📦 Install
+## 📚 Docs
+
+Browse the [repo docs](./docs/README.md) for the latest features, or visit [nanobot.wiki](https://nanobot.wiki/docs/latest/getting-started/nanobot-overview) for upstream stable-release documentation.
 
 **Install from PyPI** (TNG fork)
 
@@ -2277,6 +2356,13 @@ nanobot/
 └── cli/            # 🖥️ Commands
 ```
 
+See the repo [docs/](./docs/README.md) directory for upstream-maintained deep-dives:
+
+- Talk to your nanobot with familiar chat apps: [Chat Apps](./docs/chat-apps.md)
+- Configure providers, web search, MCP, and runtime behavior: [Configuration](./docs/configuration.md)
+- Integrate nanobot with local tools and automations: [OpenAI-Compatible API](./docs/openai-api.md) · [Python SDK](./docs/python-sdk.md)
+- Run nanobot with Docker or as a Linux service: [Deployment](./docs/deployment.md)
+
 ## 🤝 Contribute & Roadmap
 
 PRs welcome! The codebase is intentionally small and readable. 🤗
@@ -2292,11 +2378,11 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 
 **Roadmap** — Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
 
-- [ ] **Multi-modal** — See and hear (images, voice, video)
-- [ ] **Long-term memory** — Never forget important context
-- [ ] **Better reasoning** — Multi-step planning and reflection
-- [ ] **More integrations** — Calendar and more
-- [ ] **Self-improvement** — Learn from feedback and mistakes
+- **Multi-modal** — See and hear (images, voice, video)
+- **Long-term memory** — Never forget important context
+- **Better reasoning** — Multi-step planning and reflection
+- **More integrations** — Calendar and more
+- **Self-improvement** — Learn from feedback and mistakes
 
 ### Contributors
 
@@ -2320,9 +2406,4 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 <p align="center">
   <em> Thanks for visiting ✨ nanobot!</em><br><br>
   <img src="https://visitor-badge.laobi.icu/badge?page_id=HKUDS.nanobot&style=for-the-badge&color=00d4ff" alt="Views">
-</p>
-
-
-<p align="center">
-  <sub>nanobot is for educational, research, and technical exchange purposes only</sub>
 </p>

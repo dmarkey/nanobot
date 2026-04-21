@@ -338,12 +338,16 @@ class AgentLoop:
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Update context for all tools that need routing info."""
+        effective_key = UNIFIED_SESSION_KEY if self._unified_session else f"{channel}:{chat_id}"
         _keyboard_tools = ("message", "ask_user_choice", "confirm_action", "ask_user_location", "spawn", "cron", "my")
         _needs_message_id = ("message", "ask_user_choice", "confirm_action", "ask_user_location")
         for name in _keyboard_tools:
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
-                    tool.set_context(channel, chat_id, *([message_id] if name in _needs_message_id else []))
+                    if name == "spawn":
+                        tool.set_context(channel, chat_id, effective_key=effective_key)
+                    else:
+                        tool.set_context(channel, chat_id, *([message_id] if name in _needs_message_id else []))
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -625,6 +629,29 @@ class AgentLoop:
                         ))
                 except asyncio.CancelledError:
                     logger.info("Task cancelled for session {}", session_key)
+                    # Preserve partial context from the interrupted turn so
+                    # the user does not lose tool results and assistant
+                    # messages accumulated before /stop.  The checkpoint was
+                    # already persisted to session metadata by
+                    # _emit_checkpoint during tool execution; materializing
+                    # it into session history now makes it visible in the
+                    # next conversation turn.
+                    try:
+                        key = self._effective_session_key(msg)
+                        session = self.sessions.get_or_create(key)
+                        if self._restore_runtime_checkpoint(session):
+                            self._clear_pending_user_turn(session)
+                            self.sessions.save(session)
+                            logger.info(
+                                "Restored partial context for cancelled session {}",
+                                key,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "Could not restore checkpoint for cancelled session {}",
+                            session_key,
+                            exc_info=True,
+                        )
                     raise
                 except Exception:
                     logger.exception("Error processing message for session {}", session_key)
@@ -700,7 +727,10 @@ class AgentLoop:
 
             session, pending = self.auto_compact.prepare_session(session, key)
 
-            await self.consolidator.maybe_consolidate_by_tokens(session)
+            await self.consolidator.maybe_consolidate_by_tokens(
+                session,
+                session_summary=pending,
+            )
             # Persist subagent follow-ups into durable history BEFORE prompt
             # assembly. ContextBuilder merges adjacent same-role messages for
             # provider compatibility, which previously caused the follow-up to
@@ -764,7 +794,10 @@ class AgentLoop:
         if result := await self.commands.dispatch(ctx):
             return result
 
-        await self.consolidator.maybe_consolidate_by_tokens(session)
+        await self.consolidator.maybe_consolidate_by_tokens(
+            session,
+            session_summary=pending,
+        )
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
         if message_tool := self.tools.get("message"):
