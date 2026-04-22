@@ -421,13 +421,13 @@ async def test_github_copilot_provider_refreshes_client_api_key_before_chat():
     })
 
     with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI", return_value=mock_client):
-        provider = GitHubCopilotProvider(default_model="github-copilot/gpt-5.1")
+        provider = GitHubCopilotProvider(default_model="github-copilot/gpt-4")
 
     provider._get_copilot_access_token = AsyncMock(return_value="copilot-access-token")
 
     response = await provider.chat(
         messages=[{"role": "user", "content": "hi"}],
-        model="github-copilot/gpt-5.1",
+        model="github-copilot/gpt-4",
         max_tokens=16,
         temperature=0.1,
     )
@@ -1272,34 +1272,156 @@ def test_gateway_cli_port_overrides_configured_port(monkeypatch, tmp_path: Path)
     assert "port 18792" in result.stdout
 
 
-def test_webhook_server_serves_health_endpoint() -> None:
-    """WebhookServer exposes /health that returns {"status": "ok"}."""
-    from aiohttp.test_utils import AioHTTPTestCase, TestServer
-    from nanobot.api.webhook import WebhookServer
-    from nanobot.bus.queue import MessageBus
+def test_gateway_health_endpoint_binds_and_serves_expected_responses(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_file = _write_instance_config(tmp_path)
+    config = Config()
+    config.gateway.port = 18791
+    captured: dict[str, object] = {}
 
-    ws = WebhookServer(bus=MessageBus(), host="127.0.0.1", port=0)
-    # Build the aiohttp app directly to test the handler
-    from aiohttp import web
+    class _FakeDream:
+        model = None
+        max_batch_size = 0
+        max_iterations = 0
 
-    app = web.Application()
-    app.router.add_get("/health", ws._handle_health)
+        async def run(self) -> None:
+            return None
 
-    async def _test():
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", 0)
-        await site.start()
-        port = site._server.sockets[0].getsockname()[1]
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"http://127.0.0.1:{port}/health") as resp:
-                assert resp.status == 200
-                body = await resp.json()
-                assert body == {"status": "ok"}
-        await runner.cleanup()
+    class _FakeSessionManager:
+        def flush_all(self) -> int:
+            return 0
 
-    asyncio.run(_test())
+    class _FakeAgentLoop:
+        def __init__(self, **_kwargs) -> None:
+            self.model = "test-model"
+            self.dream = _FakeDream()
+            self.sessions = _FakeSessionManager()
+
+        async def run(self) -> None:
+            await asyncio.Event().wait()
+
+        async def close_mcp(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeChannelManager:
+        def __init__(self, _config, _bus, **_kwargs) -> None:
+            self.enabled_channels = ["telegram", "discord"]
+
+        async def start_all(self) -> None:
+            await asyncio.Event().wait()
+
+        async def stop_all(self) -> None:
+            return None
+
+    class _FakeCronService:
+        def __init__(self, _store_path: Path) -> None:
+            self.on_job = None
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def status(self) -> dict[str, int]:
+            return {"jobs": 0}
+
+        def register_system_job(self, _job) -> None:
+            return None
+
+    class _FakeHeartbeatService:
+        def __init__(self, **_kwargs) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeServer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def serve_forever(self) -> None:
+            raise _StopGatewayError("stop")
+
+    async def _fake_start_server(handler, host: str, port: int):
+        captured["handler"] = handler
+        captured["host"] = host
+        captured["port"] = port
+        return _FakeServer()
+
+    class _FakeReader:
+        def __init__(self, payload: bytes) -> None:
+            self.payload = payload
+
+        async def read(self, _size: int) -> bytes:
+            return self.payload
+
+    class _FakeWriter:
+        def __init__(self) -> None:
+            self.output = b""
+            self.closed = False
+
+        def write(self, data: bytes) -> None:
+            self.output += data
+
+        async def drain(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    _patch_cli_command_runtime(
+        monkeypatch,
+        config,
+        message_bus=lambda: object(),
+        session_manager=lambda _workspace: object(),
+    )
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCronService)
+    monkeypatch.setattr("nanobot.heartbeat.service.HeartbeatService", _FakeHeartbeatService)
+    monkeypatch.setattr("asyncio.start_server", _fake_start_server)
+
+    result = runner.invoke(app, ["gateway", "--config", str(config_file)])
+
+    assert result.exit_code == 0
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 18791
+    assert "Health endpoint: http://127.0.0.1:18791/health" in result.stdout
+
+    def _call_handler(path: str) -> tuple[str, _FakeWriter]:
+        request = f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+        writer = _FakeWriter()
+        handler = captured["handler"]
+        assert callable(handler)
+        asyncio.run(handler(_FakeReader(request), writer))
+        return writer.output.decode(), writer
+
+    root_response, root_writer = _call_handler("/")
+    assert root_writer.closed is True
+    assert "HTTP/1.0 404 Not Found" in root_response
+    assert root_response.endswith("\r\n\r\nNot Found")
+
+    health_response, health_writer = _call_handler("/health")
+    assert health_writer.closed is True
+    assert "HTTP/1.0 200 OK" in health_response
+    health_body = json.loads(health_response.split("\r\n\r\n", 1)[1])
+    assert health_body == {"status": "ok"}
+
+    missing_response, missing_writer = _call_handler("/missing")
+    assert missing_writer.closed is True
+    assert "HTTP/1.0 404 Not Found" in missing_response
+    assert missing_response.endswith("\r\n\r\nNot Found")
 
 
 def test_serve_uses_api_config_defaults_and_workspace_override(

@@ -63,6 +63,7 @@ class ChannelManager:
         transcription_provider = self.config.channels.transcription_provider
         transcription_key = self._resolve_transcription_key(transcription_provider)
         transcription_base = self._resolve_transcription_base(transcription_provider)
+        transcription_language = self.config.channels.transcription_language
         zhipu_key = self._resolve_zhipu_key()
 
         for name, cls in discover_all().items():
@@ -89,6 +90,7 @@ class ChannelManager:
                 channel.transcription_provider = transcription_provider
                 channel.transcription_api_key = transcription_key
                 channel.transcription_api_base = transcription_base
+                channel.transcription_language = transcription_language
                 channel.zhipu_api_key = zhipu_key
                 self.channels[name] = channel
                 logger.info("{} channel enabled", cls.display_name)
