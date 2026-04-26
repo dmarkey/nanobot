@@ -194,6 +194,7 @@ class AgentLoop:
         subagent_disabled_tools: list[str] | None = None,
         timezone: str | None = None,
         session_ttl_minutes: int = 0,
+        consolidation_ratio: float = 0.5,
         hooks: list[AgentHook] | None = None,
         unified_session: bool = False,
         disabled_skills: list[str] | None = None,
@@ -278,6 +279,7 @@ class AgentLoop:
             build_messages=self.context.build_messages,
             get_tool_definitions=self.tools.get_definitions,
             max_completion_tokens=provider.generation.max_tokens,
+            consolidation_ratio=consolidation_ratio,
         )
         self.auto_compact = AutoCompact(
             sessions=self.sessions,
