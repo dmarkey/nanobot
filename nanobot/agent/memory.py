@@ -450,6 +450,17 @@ class Consolidator:
             weakref.WeakValueDictionary()
         )
 
+    def set_provider(
+        self,
+        provider: LLMProvider,
+        model: str,
+        context_window_tokens: int,
+    ) -> None:
+        self.provider = provider
+        self.model = model
+        self.context_window_tokens = context_window_tokens
+        self.max_completion_tokens = provider.generation.max_tokens
+
     def get_lock(self, session_key: str) -> asyncio.Lock:
         """Return the shared consolidation lock for one session."""
         return self._locks.setdefault(session_key, asyncio.Lock())
@@ -483,7 +494,7 @@ class Consolidator:
         session_summary: str | None = None,
     ) -> tuple[int, str]:
         """Estimate current prompt size for the normal session history view."""
-        history = session.get_history(max_messages=0)
+        history = session.get_history(max_messages=0, include_timestamps=True)
         channel, chat_id = (session.key.split(":", 1) if ":" in session.key else (None, None))
         probe_messages = self._build_messages(
             history=history,
@@ -709,6 +720,11 @@ class Dream:
         self.annotate_line_ages = annotate_line_ages
         self._runner = AgentRunner(provider)
         self._tools = self._build_tools()
+
+    def set_provider(self, provider: LLMProvider, model: str) -> None:
+        self.provider = provider
+        self.model = model
+        self._runner.provider = provider
 
     # -- tool registry -------------------------------------------------------
 
