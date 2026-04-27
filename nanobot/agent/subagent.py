@@ -11,11 +11,11 @@ from typing import Any
 from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
-from nanobot.utils.prompt_templates import render_template
-from nanobot.agent.runner import AgentRunSpec, AgentRunner
+from nanobot.agent.runner import AgentRunner, AgentRunSpec
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.resolve import ResolveToolsTool
 from nanobot.agent.tools.search import GlobTool, GrepTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
@@ -23,6 +23,7 @@ from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import ExecToolConfig, WebToolsConfig
 from nanobot.providers.base import LLMProvider
+from nanobot.utils.prompt_templates import render_template
 
 
 @dataclass(slots=True)
@@ -84,6 +85,7 @@ class SubagentManager:
         parent_mcp_tools: ToolRegistry | None = None,
         disabled_tools: list[str] | None = None,
         disabled_skills: list[str] | None = None,
+        deferred_loading: bool = False,
     ):
         self.provider = provider
         self.workspace = workspace
@@ -97,6 +99,7 @@ class SubagentManager:
         self._parent_mcp_tools = parent_mcp_tools
         self._disabled_tools = disabled_tools or []
         self.disabled_skills = set(disabled_skills or [])
+        self._deferred_loading = deferred_loading
         self.runner = AgentRunner(provider)
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_statuses: dict[str, SubagentStatus] = {}
@@ -192,12 +195,14 @@ class SubagentManager:
                 for name in self._parent_mcp_tools.tool_names:
                     tool = self._parent_mcp_tools.get(name)
                     if tool:
-                        tools.register(tool)
-                        logger.debug("Subagent [{}]: shared MCP tool '{}'", task_id, name)
+                        tools.register(tool, deferred=self._deferred_loading)
+                        logger.debug("Subagent [{}]: shared{} MCP tool '{}'", task_id, " deferred" if self._deferred_loading else "", name)
+                if self._deferred_loading:
+                    tools.register(ResolveToolsTool(tools))
             if tool_filter:
                 tools.apply_inclusion_filter(tool_filter)
             tools.apply_disabled_filter(self._disabled_tools)
-            system_prompt = self._build_subagent_prompt()
+            system_prompt = self._build_subagent_prompt(tool_registry=tools if self._deferred_loading else None)
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task},
@@ -310,7 +315,7 @@ class SubagentManager:
             lines.append(f"- {result.error}")
         return "\n".join(lines) or (result.error or "Error: subagent execution failed.")
 
-    def _build_subagent_prompt(self) -> str:
+    def _build_subagent_prompt(self, tool_registry: ToolRegistry | None = None) -> str:
         """Build a focused system prompt for the subagent."""
         from nanobot.agent.context import ContextBuilder
         from nanobot.agent.skills import SkillsLoader
@@ -320,12 +325,17 @@ class SubagentManager:
             self.workspace,
             disabled_skills=self.disabled_skills,
         ).build_skills_summary()
-        return render_template(
+        prompt = render_template(
             "agent/subagent_system.md",
             time_ctx=time_ctx,
             workspace=str(self.workspace),
             skills_summary=skills_summary or "",
         )
+        if tool_registry:
+            deferred_section = ContextBuilder._build_deferred_tools_section(tool_registry)
+            if deferred_section:
+                prompt += "\n\n---\n\n" + deferred_section
+        return prompt
 
     async def cancel_by_session(self, session_key: str) -> int:
         """Cancel all subagents for the given session. Returns count cancelled."""

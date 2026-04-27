@@ -17,25 +17,53 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
+        self._deferred: dict[str, Tool] = {}
         self._cached_definitions: list[dict[str, Any]] | None = None
 
-    def register(self, tool: Tool) -> None:
-        """Register a tool."""
-        self._tools[tool.name] = tool
+    def register(self, tool: Tool, *, deferred: bool = False) -> None:
+        """Register a tool. Deferred tools are held back until resolved."""
+        if deferred:
+            self._deferred[tool.name] = tool
+        else:
+            self._tools[tool.name] = tool
         self._cached_definitions = None
 
     def unregister(self, name: str) -> None:
         """Unregister a tool by name."""
         self._tools.pop(name, None)
+        self._deferred.pop(name, None)
         self._cached_definitions = None
 
     def get(self, name: str) -> Tool | None:
-        """Get a tool by name."""
+        """Get a tool by name (active tools only)."""
         return self._tools.get(name)
 
     def has(self, name: str) -> bool:
-        """Check if a tool is registered."""
-        return name in self._tools
+        """Check if a tool is registered (active or deferred)."""
+        return name in self._tools or name in self._deferred
+
+    def resolve(self, names: list[str]) -> list[dict[str, Any]]:
+        """Promote deferred tools to active. Returns their full schemas."""
+        resolved: list[dict[str, Any]] = []
+        for name in names:
+            if name in self._deferred:
+                tool = self._deferred.pop(name)
+                self._tools[name] = tool
+                resolved.append(tool.to_schema())
+                self._cached_definitions = None
+                logger.info("Resolved deferred tool '{}'", name)
+        return resolved
+
+    def get_deferred_catalog(self) -> list[dict[str, str]]:
+        """Name + description pairs for deferred tools (for system prompt injection)."""
+        return [
+            {"name": t.name, "description": t.description}
+            for t in sorted(self._deferred.values(), key=lambda t: t.name)
+        ]
+
+    @property
+    def deferred_count(self) -> int:
+        return len(self._deferred)
 
     @staticmethod
     def _schema_name(schema: dict[str, Any]) -> str:
@@ -139,7 +167,14 @@ class ToolRegistry:
         for name in to_remove:
             del self._tools[name]
             logger.info("Tool '{}' disabled by filter", name)
-        if not to_remove:
+        deferred_remove = [
+            name for name in self._deferred
+            if any(fnmatch(name, p) for p in patterns)
+        ]
+        for name in deferred_remove:
+            del self._deferred[name]
+            logger.info("Deferred tool '{}' disabled by filter", name)
+        if not to_remove and not deferred_remove:
             logger.warning("Disabled tool filter matched nothing: patterns={}", patterns)
 
     def apply_inclusion_filter(self, patterns: list[str]) -> None:
@@ -152,4 +187,12 @@ class ToolRegistry:
         ]
         for name in to_remove:
             del self._tools[name]
-        logger.info("Inclusion filter kept {} tools, removed {}: patterns={}", len(self._tools), len(to_remove), patterns)
+        deferred_remove = [
+            name for name in self._deferred
+            if not any(fnmatch(name, p) for p in patterns)
+        ]
+        for name in deferred_remove:
+            del self._deferred[name]
+        total_removed = len(to_remove) + len(deferred_remove)
+        total_kept = len(self._tools) + len(self._deferred)
+        logger.info("Inclusion filter kept {} tools, removed {}: patterns={}", total_kept, total_removed, patterns)

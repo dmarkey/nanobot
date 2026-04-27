@@ -434,13 +434,16 @@ class MCPPromptWrapper(Tool):
 
 
 async def connect_mcp_servers(
-    mcp_servers: dict, registry: ToolRegistry
+    mcp_servers: dict, registry: ToolRegistry, *, deferred: bool = False,
 ) -> dict[str, AsyncExitStack]:
     """Connect to configured MCP servers and register their tools, resources, prompts.
 
     Returns a dict mapping server name -> its dedicated AsyncExitStack.
     Each server gets its own stack and runs in its own task to prevent
     cancel scope conflicts when multiple MCP servers are configured.
+
+    When *deferred* is True, tools are registered with deferred=True so
+    their full schemas are only loaded on demand via resolve_tools.
     """
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.sse import sse_client
@@ -539,8 +542,8 @@ async def connect_mcp_servers(
                     )
                     continue
                 wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
-                registry.register(wrapper)
-                logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
+                registry.register(wrapper, deferred=deferred)
+                logger.debug("MCP: registered{} tool '{}' from server '{}'", " deferred" if deferred else "", wrapper.name, name)
                 registered_count += 1
                 if enabled_tools:
                     if tool_def.name in enabled_tools:
@@ -566,10 +569,10 @@ async def connect_mcp_servers(
                     wrapper = MCPResourceWrapper(
                         session, name, resource, resource_timeout=cfg.tool_timeout
                     )
-                    registry.register(wrapper)
+                    registry.register(wrapper, deferred=deferred)
                     registered_count += 1
                     logger.debug(
-                        "MCP: registered resource '{}' from server '{}'", wrapper.name, name
+                        "MCP: registered{} resource '{}' from server '{}'", " deferred" if deferred else "", wrapper.name, name
                     )
             except Exception as e:
                 logger.debug("MCP server '{}': resources not supported or failed: {}", name, e)
@@ -580,9 +583,9 @@ async def connect_mcp_servers(
                     wrapper = MCPPromptWrapper(
                         session, name, prompt, prompt_timeout=cfg.tool_timeout
                     )
-                    registry.register(wrapper)
+                    registry.register(wrapper, deferred=deferred)
                     registered_count += 1
-                    logger.debug("MCP: registered prompt '{}' from server '{}'", wrapper.name, name)
+                    logger.debug("MCP: registered{} prompt '{}' from server '{}'", " deferred" if deferred else "", wrapper.name, name)
             except Exception as e:
                 logger.debug("MCP server '{}': prompts not supported or failed: {}", name, e)
 

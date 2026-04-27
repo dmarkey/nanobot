@@ -9,7 +9,13 @@ from typing import Any
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
-from nanobot.utils.helpers import build_assistant_message, current_time_str, detect_image_mime, truncate_text
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.utils.helpers import (
+    build_assistant_message,
+    current_time_str,
+    detect_image_mime,
+    truncate_text,
+)
 from nanobot.utils.prompt_templates import render_template
 
 
@@ -32,6 +38,7 @@ class ContextBuilder:
         self,
         skill_names: list[str] | None = None,
         channel: str | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity(channel=channel)]
@@ -54,6 +61,11 @@ class ContextBuilder:
         if skills_summary:
             parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
 
+        if tool_registry:
+            deferred_section = self._build_deferred_tools_section(tool_registry)
+            if deferred_section:
+                parts.append(deferred_section)
+
         entries = self.memory.read_unprocessed_history(since_cursor=self.memory.get_last_dream_cursor())
         if entries:
             capped = entries[-self._MAX_RECENT_HISTORY:]
@@ -64,6 +76,24 @@ class ContextBuilder:
             parts.append("# Recent History\n\n" + history_text)
 
         return "\n\n---\n\n".join(parts)
+
+    @staticmethod
+    def _build_deferred_tools_section(registry: ToolRegistry) -> str:
+        """Build system prompt section listing deferred tools available via resolve_tools."""
+        catalog = registry.get_deferred_catalog()
+        if not catalog:
+            return ""
+        lines = [
+            "# Deferred Tools",
+            "",
+            "The following tools are available but their full schemas are not loaded yet.",
+            "Call `resolve_tools` with the tool name(s) you need before using them.",
+            "You can resolve multiple tools in a single call.",
+            "",
+        ]
+        for entry in catalog:
+            lines.append(f"- **{entry['name']}** — {entry['description']}")
+        return "\n".join(lines)
 
     def _get_identity(self, channel: str | None = None) -> str:
         """Get the core identity section."""
@@ -153,6 +183,7 @@ class ContextBuilder:
         chat_id: str | None = None,
         current_role: str = "user",
         session_summary: str | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         runtime_ctx = self._build_runtime_context(channel, chat_id, self.timezone, session_summary=session_summary)
@@ -165,7 +196,7 @@ class ContextBuilder:
         else:
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
         messages = [
-            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel)},
+            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel, tool_registry=tool_registry)},
             *history,
         ]
         if messages[-1].get("role") == current_role:

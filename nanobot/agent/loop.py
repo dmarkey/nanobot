@@ -29,10 +29,15 @@ from nanobot.agent.tools.ask import (
 )
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
-from nanobot.agent.tools.interactive import AskUserChoiceTool, AskUserLocationTool, ConfirmActionTool
+from nanobot.agent.tools.interactive import (
+    AskUserChoiceTool,
+    AskUserLocationTool,
+    ConfirmActionTool,
+)
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.notebook import NotebookEditTool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.resolve import ResolveToolsTool
 from nanobot.agent.tools.search import GlobTool, GrepTool
 from nanobot.agent.tools.self import MyTool
 from nanobot.agent.tools.shell import ExecTool
@@ -244,6 +249,7 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self._disabled_tools = disabled_tools or []
+        self._deferred_loading = _tc.deferred_loading
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
@@ -266,6 +272,7 @@ class AgentLoop:
             parent_mcp_tools=self._mcp_tools,
             disabled_tools=subagent_disabled_tools or [],
             disabled_skills=disabled_skills,
+            deferred_loading=self._deferred_loading,
         )
         self._unified_session = unified_session
         self._running = False
@@ -386,6 +393,8 @@ class AgentLoop:
             self.tools.register(
                 CronTool(self.cron_service, default_timezone=self.context.timezone or "UTC")
             )
+        if self._deferred_loading:
+            self.tools.register(ResolveToolsTool(self.tools))
         self.tools.apply_disabled_filter(self._disabled_tools)
 
     async def _connect_mcp(self) -> None:
@@ -396,12 +405,19 @@ class AgentLoop:
         from nanobot.agent.tools.mcp import connect_mcp_servers
 
         try:
-            self._mcp_stacks = await connect_mcp_servers(self._mcp_servers, self.tools)
+            self._mcp_stacks = await connect_mcp_servers(
+                self._mcp_servers, self.tools, deferred=self._deferred_loading,
+            )
             if self._mcp_stacks:
                 # Keep an unfiltered copy for subagent inheritance, then filter the main agent's tools.
+                # When deferred loading is enabled, MCP tools live in _deferred, not _tools.
                 from nanobot.agent.tools.mcp import MCPToolWrapper
                 for name in self.tools.tool_names:
                     tool = self.tools.get(name)
+                    if isinstance(tool, MCPToolWrapper):
+                        self._mcp_tools.register(tool)
+                for entry in self.tools.get_deferred_catalog():
+                    tool = self.tools._deferred.get(entry["name"])
                     if isinstance(tool, MCPToolWrapper):
                         self._mcp_tools.register(tool)
                 self.tools.apply_disabled_filter(self._disabled_tools)
@@ -947,6 +963,7 @@ class AgentLoop:
                 chat_id=chat_id,
                 session_summary=pending,
                 current_role=current_role,
+                tool_registry=self.tools if self._deferred_loading else None,
             )
             final_content, _, all_msgs, stop_reason, _ = await self._run_agent_loop(
                 messages, session=session, channel=channel, chat_id=chat_id,
@@ -1029,7 +1046,7 @@ class AgentLoop:
         pending_ask_id = pending_ask_user_id(history)
         if pending_ask_id:
             initial_messages = ask_user_tool_result_messages(
-                self.context.build_system_prompt(channel=msg.channel),
+                self.context.build_system_prompt(channel=msg.channel, tool_registry=self.tools if self._deferred_loading else None),
                 history,
                 pending_ask_id,
                 msg.content,
@@ -1042,6 +1059,7 @@ class AgentLoop:
                 media=msg.media if msg.media else None,
                 channel=msg.channel,
                 chat_id=self._runtime_chat_id(msg),
+                tool_registry=self.tools if self._deferred_loading else None,
             )
 
         async def _bus_progress(
