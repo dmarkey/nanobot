@@ -320,10 +320,11 @@ async def test_base_channel_passes_language_to_groq_transcription_provider():
     captured: dict[str, object] = {}
 
     class _StubGroq:
-        def __init__(self, api_key=None, api_base=None, language=None):
+        def __init__(self, api_key=None, api_base=None, language=None, model=None):
             captured["api_key"] = api_key
             captured["api_base"] = api_base
             captured["language"] = language
+            captured["model"] = model
 
         async def transcribe(self, file_path):
             return "ok"
