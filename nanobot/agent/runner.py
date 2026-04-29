@@ -13,6 +13,7 @@ from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.tools.ask import AskUserInterrupt
+from nanobot.agent.tools.interactive import AskUserNoResponse
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.utils.helpers import (
@@ -338,6 +339,15 @@ class AgentRunner:
                     if isinstance(fatal_error, AskUserInterrupt):
                         final_content = fatal_error.question
                         stop_reason = "ask_user"
+                        context.final_content = final_content
+                        context.stop_reason = stop_reason
+                        if hook.wants_streaming():
+                            await hook.on_stream_end(context, resuming=False)
+                        await hook.after_iteration(context)
+                        break
+                    if isinstance(fatal_error, AskUserNoResponse):
+                        final_content = ""
+                        stop_reason = "ask_user_timeout"
                         context.final_content = final_content
                         context.stop_reason = stop_reason
                         if hook.wants_streaming():
@@ -713,9 +723,9 @@ class AgentRunner:
                     result = await self._run_tool(spec, tool_call, external_lookup_counts)
                     tool_results.append(result)
                     batch_results.append(result)
-                    if isinstance(result[2], AskUserInterrupt):
+                    if isinstance(result[2], (AskUserInterrupt, AskUserNoResponse)):
                         break
-            if any(isinstance(error, AskUserInterrupt) for _, _, error in batch_results):
+            if any(isinstance(error, (AskUserInterrupt, AskUserNoResponse)) for _, _, error in batch_results):
                 break
 
         results: list[Any] = []
@@ -790,6 +800,9 @@ class AgentRunner:
             if isinstance(exc, AskUserInterrupt):
                 event["status"] = "waiting"
                 return "", event, exc
+            if isinstance(exc, AskUserNoResponse):
+                event["status"] = "timeout"
+                return f"User did not respond within {exc.timeout_s}s.", event, exc
             if self._is_workspace_violation(str(exc)):
                 logger.warning(
                     "Tool {} blocked by workspace/safety guard; aborting turn: {}",

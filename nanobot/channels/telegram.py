@@ -1397,36 +1397,3 @@ class TelegramChannel(BaseChannel):
         # Buttons are semantic options; when we can't render a keyboard, the user still needs to see them.
         return "\n".join(" ".join(f"[{label}]" for label in row) for row in buttons if row)
 
-    async def _on_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle inline keyboard button clicks (callback queries)."""
-        if not update.callback_query or not update.effective_user:
-            return
-        query = update.callback_query
-        user = update.effective_user
-        chat_id = query.message.chat_id if query.message else None
-        sender_id = self._sender_id(user)
-        if not chat_id:
-            logger.warning("Callback query without chat_id")
-            return
-        button_label = query.data or ""
-        await query.answer()
-        if query.message:
-            try:
-                await query.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-        logger.debug("Inline button tap from {}: {}", sender_id, button_label)
-        self._start_typing(str(chat_id))
-        await self._handle_message(
-            sender_id=sender_id,
-            chat_id=str(chat_id),
-            content=button_label,
-            metadata={
-                "callback_query_id": query.id,
-                "button_label": button_label,
-                "user_id": user.id,
-                "username": user.username,
-                "first_name": user.first_name,
-                "is_callback": True,
-            },
-        )

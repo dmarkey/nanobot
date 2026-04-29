@@ -10,6 +10,19 @@ from nanobot.bus.events import OutboundMessage
 # All other channels get a text fallback that the LLM can act on immediately.
 _INTERACTIVE_CHANNELS = {"telegram"}
 
+_KEYBOARD_TIMEOUT_S = 300
+
+
+class AskUserNoResponse(BaseException):
+    """User did not respond before the keyboard timeout. The runner ends the
+    turn instead of letting the LLM see the timeout as a tool result and
+    inadvertently treat it as approval."""
+
+    def __init__(self, tool_name: str, timeout_s: int = _KEYBOARD_TIMEOUT_S) -> None:
+        self.tool_name = tool_name
+        self.timeout_s = timeout_s
+        super().__init__(f"{tool_name} timed out after {timeout_s}s")
+
 
 class _InteractiveToolBase(Tool):
     """Shared plumbing for tools that present interactive UI and await user input."""
@@ -113,7 +126,7 @@ class _InteractiveToolBase(Tool):
             return f"Error sending keyboard: {e}"
 
         try:
-            value = await asyncio.wait_for(future, timeout=300)
+            value = await asyncio.wait_for(future, timeout=_KEYBOARD_TIMEOUT_S)
             return value
         except asyncio.TimeoutError:
             self._pending.pop(key, None)
@@ -193,7 +206,7 @@ class AskUserChoiceTool(_InteractiveToolBase):
             )
         result = await self._send_keyboard(text, buttons, columns, channel, chat_id)
         if result == "__timeout__":
-            return "Timed out waiting for user selection (5 minutes)."
+            raise AskUserNoResponse("ask_user_choice")
         if result == "__cancelled__":
             return "Selection cancelled."
         return f"User selected: {result}"
@@ -258,7 +271,7 @@ class ConfirmActionTool(_InteractiveToolBase):
         ]
         result = await self._send_keyboard(text, buttons, columns=2, channel=channel, chat_id=chat_id)
         if result == "__timeout__":
-            return "Timed out waiting for confirmation (5 minutes). Action NOT performed."
+            raise AskUserNoResponse("confirm_action")
         if result == "__cancelled__":
             return "Confirmation cancelled. Action NOT performed."
         if result == "yes":
@@ -344,10 +357,10 @@ class AskUserLocationTool(_InteractiveToolBase):
             return f"Error requesting location: {e}"
 
         try:
-            value = await asyncio.wait_for(future, timeout=300)
+            value = await asyncio.wait_for(future, timeout=_KEYBOARD_TIMEOUT_S)
             return f"User location: {value}"
         except asyncio.TimeoutError:
             self._pending.pop(key, None)
-            return "Timed out waiting for location (5 minutes)."
+            raise AskUserNoResponse("ask_user_location")
         except asyncio.CancelledError:
             return "Location request cancelled."

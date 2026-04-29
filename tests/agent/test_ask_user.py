@@ -7,6 +7,7 @@ from nanobot.agent.loop import AgentLoop
 from nanobot.agent.runner import AgentRunner, AgentRunSpec
 from nanobot.agent.tools.ask import AskUserInterrupt, AskUserTool
 from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.interactive import AskUserChoiceTool, AskUserNoResponse
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.schema import tool_parameters_schema
 from nanobot.bus.events import InboundMessage
@@ -239,3 +240,66 @@ async def test_ask_user_keeps_buttons_for_websocket(tmp_path):
     assert response is not None
     assert response.content == "Install the optional package?"
     assert response.buttons == [["Install", "Skip"]]
+
+
+@pytest.mark.asyncio
+async def test_ask_user_choice_raises_on_timeout(monkeypatch):
+    """Timeout must surface as AskUserNoResponse so the runner can abort the
+    turn instead of feeding the LLM a string it might treat as approval."""
+    tool = AskUserChoiceTool()
+
+    async def _fake_send(_msg):
+        return None
+
+    tool.set_send_callback(_fake_send)
+    tool.set_context("telegram", "123")
+
+    monkeypatch.setattr("nanobot.agent.tools.interactive._KEYBOARD_TIMEOUT_S", 0.05)
+
+    with pytest.raises(AskUserNoResponse) as exc:
+        await tool.execute(text="Approve?", buttons=[{"label": "Yes", "value": "yes"}])
+
+    assert exc.value.tool_name == "ask_user_choice"
+
+
+@pytest.mark.asyncio
+async def test_runner_ends_turn_on_ask_user_choice_timeout(monkeypatch, tmp_path):
+    """When the interactive tool times out, the agent loop must return no
+    outbound message — the keyboard is already in chat and the LLM must not
+    be re-invoked to fabricate an answer."""
+    monkeypatch.setattr("nanobot.agent.tools.interactive._KEYBOARD_TIMEOUT_S", 0.05)
+
+    call_count = 0
+
+    async def chat_with_retry(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        return LLMResponse(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCallRequest(
+                    id="call_ask",
+                    name="ask_user_choice",
+                    arguments={
+                        "text": "Approve this?",
+                        "buttons": [{"label": "Yes", "value": "yes"}],
+                    },
+                )
+            ],
+        )
+
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=_make_provider(chat_with_retry),
+        workspace=tmp_path,
+        model="test-model",
+    )
+
+    response = await loop._process_message(
+        InboundMessage(channel="telegram", sender_id="user", chat_id="123", content="next ticket")
+    )
+
+    assert response is None
+    # LLM is invoked exactly once; the timeout must not trigger a second call.
+    assert call_count == 1
