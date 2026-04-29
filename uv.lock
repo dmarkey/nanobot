@@ -1214,6 +1214,9 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+http2 = [
+    { name = "h2" },
+]
 socks = [
     { name = "socksio" },
 ]
@@ -1920,7 +1923,7 @@ wheels = [
 
 [[package]]
 name = "nanobot-ai-tng"
-version = "0.1.5.post2"
+version = "0.1.5.post3"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -1991,6 +1994,9 @@ msteams = [
     { name = "cryptography" },
     { name = "pyjwt" },
 ]
+olostep = [
+    { name = "olostep" },
+]
 pdf = [
     { name = "pymupdf" },
 ]
@@ -2035,6 +2041,7 @@ requires-dist = [
     { name = "msgpack", specifier = ">=1.1.0,<2.0.0" },
     { name = "nh3", marker = "extra == 'matrix'", specifier = ">=0.2.17,<1.0.0" },
     { name = "oauth-cli-kit", specifier = ">=0.1.3,<1.0.0" },
+    { name = "olostep", marker = "extra == 'olostep'", specifier = ">=0.1.0" },
     { name = "openai", specifier = ">=2.8.0" },
     { name = "openpyxl", specifier = ">=3.1.0,<4.0.0" },
     { name = "piper-tts", marker = "extra == 'voice'", specifier = ">=1.4.0" },
@@ -2070,7 +2077,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=16.0,<17.0" },
     { name = "wecom-aibot-sdk-python", marker = "extra == 'wecom'", specifier = ">=0.1.5" },
 ]
-provides-extras = ["api", "wecom", "weixin", "msteams", "matrix", "voice", "discord", "langsmith", "pdf", "dev"]
+provides-extras = ["api", "wecom", "weixin", "msteams", "matrix", "voice", "discord", "langsmith", "pdf", "olostep", "dev"]
 
 [[package]]
 name = "nh3"
@@ -2208,6 +2215,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b6/84/c6b1030669266378e2f286a4e3e8c020e7f2d537b711a2ad30a789e97097/oauth_cli_kit-0.1.3.tar.gz", hash = "sha256:6612b3dea1a97c4de4a7d3b828767d42f0a78eae93be56b90c55d3ab668ebfb8", size = 8551, upload-time = "2026-02-13T10:21:19.046Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ee/55/a4abfc5f9be60ffd7fedf0e808ffd0a1d35f3ecd6f7b2fc782b7948a8329/oauth_cli_kit-0.1.3-py3-none-any.whl", hash = "sha256:09aabde83fbb823b38de3b8c220f6c256df2d771bf31dccdb2680a5fbe383836", size = 11504, upload-time = "2026-02-13T10:21:18.282Z" },
+]
+
+[[package]]
+name = "olostep"
+version = "1.0.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx", extra = ["http2"] },
+    { name = "pycountry" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/71/c3/fcb95b1752e222cccf94e13914de3323b489ecabf9e187a93439914531c4/olostep-1.0.4.tar.gz", hash = "sha256:9e0005d8f7bd6d12974feff48c510176d1bf6f3d58c6f5b3518fb858389e7125", size = 68301, upload-time = "2026-03-17T17:50:05.937Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/4b/eb17f831a85b4b722a9480649f9180b64d2767c103dfd74df9536296ef4f/olostep-1.0.4-py3-none-any.whl", hash = "sha256:fffdd4bedcd24819656f2a8bd5ff0f8ad3c9e34ba8872ab4829164731236d67d", size = 78220, upload-time = "2026-03-17T17:50:04.526Z" },
 ]
 
 [[package]]
@@ -2648,6 +2669,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1f/3e/38ff2ddee5cc946f575c9d8cc822e34bde205cf61acf8099ad88ef19d7d2/protobuf-7.34.0-cp310-abi3-win32.whl", hash = "sha256:f791ec509707a1d91bd02e07df157e75e4fb9fbdad12a81b7396201ec244e2e3", size = 426628, upload-time = "2026-02-27T00:30:21.555Z" },
     { url = "https://files.pythonhosted.org/packages/cb/71/7c32eaf34a61a1bae1b62a2ac4ffe09b8d1bb0cf93ad505f42040023db89/protobuf-7.34.0-cp310-abi3-win_amd64.whl", hash = "sha256:9f9079f1dde4e32342ecbd1c118d76367090d4aaa19da78230c38101c5b3dd40", size = 437901, upload-time = "2026-02-27T00:30:22.836Z" },
     { url = "https://files.pythonhosted.org/packages/a4/e7/14dc9366696dcb53a413449881743426ed289d687bcf3d5aee4726c32ebb/protobuf-7.34.0-py3-none-any.whl", hash = "sha256:e3b914dd77fa33fa06ab2baa97937746ab25695f389869afdf03e81f34e45dc7", size = 170716, upload-time = "2026-02-27T00:30:23.994Z" },
+]
+
+[[package]]
+name = "pycountry"
+version = "24.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/57/c389fa68c50590881a75b7883eeb3dc15e9e73a0fdc001cdd45c13290c92/pycountry-24.6.1.tar.gz", hash = "sha256:b61b3faccea67f87d10c1f2b0fc0be714409e8fcdcc1315613174f6466c10221", size = 6043910, upload-time = "2024-06-01T04:12:15.05Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b1/ec/1fb891d8a2660716aadb2143235481d15ed1cbfe3ad669194690b0604492/pycountry-24.6.1-py3-none-any.whl", hash = "sha256:f1a4fb391cd7214f8eefd39556d740adcc233c778a27f8942c8dca351d6ce06f", size = 6335189, upload-time = "2024-06-01T04:11:49.711Z" },
 ]
 
 [[package]]
