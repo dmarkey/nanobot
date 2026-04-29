@@ -383,13 +383,15 @@ class TelegramChannel(BaseChannel):
             )
         )
 
-        # Conditionally register inline keyboard callback handler
+        # The callback handler must always run: interactive tools
+        # (ask_user_choice, confirm_action, ask_user_location) send keyboards
+        # via the `interactive_buttons` outbound metadata path independently of
+        # the `inline_keyboards` flag, which only gates auto-buttons for the
+        # message tool. Without this handler taps are silently dropped.
+        self._app.add_handler(CallbackQueryHandler(self._on_callback_query))
+        allowed_updates = ["message", "callback_query"]
         if self.config.inline_keyboards:
-            self._app.add_handler(CallbackQueryHandler(self._on_callback_query))
-            allowed_updates = ["message", "callback_query"]
             logger.debug("Telegram inline keyboards enabled")
-        else:
-            allowed_updates = ["message"]
 
         logger.info("Starting Telegram bot (polling mode)...")
 
