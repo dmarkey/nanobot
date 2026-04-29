@@ -685,14 +685,20 @@ class AgentLoop:
                 logger.warning("Error consuming inbound message: {}, continuing...", e)
                 continue
 
-            # Route interactive tool responses to pending futures
+            # Route interactive tool responses to pending futures.
+            # Old-style tools (ask_user_choice, confirm_action) consume the
+            # click via resolve(); the new ask_user tool uses pending_ask_user_id
+            # in dispatch and so needs the click to fall through.
             if msg.metadata.get("_callback_query"):
+                resolved = False
                 for tool_name in ("ask_user_choice", "confirm_action"):
                     tool = self.tools.get(tool_name)
                     if tool and hasattr(tool, "resolve"):
                         if tool.resolve(msg.channel, msg.chat_id, msg.content):
+                            resolved = True
                             break
-                continue
+                if resolved:
+                    continue
             if msg.metadata.get("_location_response"):
                 tool = self.tools.get("ask_user_location")
                 if tool and hasattr(tool, "resolve") and tool.resolve(msg.channel, msg.chat_id, msg.content):
