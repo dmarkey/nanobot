@@ -27,6 +27,8 @@ class BaseChannel(ABC):
     transcription_api_base: str = ""
     transcription_language: str | None = None
     zhipu_api_key: str = ""
+    send_progress: bool = True
+    send_tool_hints: bool = False
 
     def __init__(self, config: Any, bus: MessageBus):
         """
