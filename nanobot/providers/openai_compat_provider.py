@@ -479,11 +479,15 @@ class OpenAICompatProvider(LLMProvider):
                 keep_from = idx
                 break
 
+        # Never strip the in-progress turn: dropping the latest tool call +
+        # its result rewinds the LLM to the prior user message and it
+        # re-emits the same tool call on the next iteration — an infinite
+        # loop. The reasoning_content backfill below satisfies the API.
         if keep_from is None:
-            trimmed = messages[:bad_idx]
-        else:
-            prefix = [msg for msg in messages[:keep_from] if msg.get("role") == "system"]
-            trimmed = prefix + messages[keep_from:]
+            return messages
+
+        prefix = [msg for msg in messages[:keep_from] if msg.get("role") == "system"]
+        trimmed = prefix + messages[keep_from:]
         logger.warning(
             "Dropped {} DeepSeek thinking history message(s) with incomplete reasoning_content",
             len(messages) - len(trimmed),

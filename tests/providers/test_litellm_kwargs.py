@@ -654,7 +654,10 @@ def test_deepseek_thinking_keeps_tool_history_with_reasoning_content() -> None:
     assert kwargs["messages"][2]["role"] == "tool"
 
 
-def test_deepseek_thinking_drops_current_bad_tool_turn_without_followup_user() -> None:
+def test_deepseek_thinking_keeps_current_bad_tool_turn_without_followup_user() -> None:
+    # Dropping the in-progress tool turn rewinds the LLM to the previous
+    # user message and it re-emits the same tool call → infinite loop.
+    # Preserve the turn; the reasoning_content backfill keeps the API happy.
     kwargs = _deepseek_kwargs([
         {"role": "system", "content": "system"},
         {"role": "user", "content": "can we use wechat?"},
@@ -662,10 +665,15 @@ def test_deepseek_thinking_drops_current_bad_tool_turn_without_followup_user() -
         {"role": "tool", "tool_call_id": "call_bad", "name": "my", "content": "channels"},
     ])
 
-    assert kwargs["messages"] == [
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": "can we use wechat?"},
-    ]
+    msgs = kwargs["messages"]
+    assert len(msgs) == 4
+    assert msgs[0]["role"] == "system"
+    assert msgs[1] == {"role": "user", "content": "can we use wechat?"}
+    assert msgs[2]["role"] == "assistant"
+    assert msgs[2]["tool_calls"]
+    assert msgs[2].get("reasoning_content") == ""
+    assert msgs[3]["role"] == "tool"
+    assert msgs[3]["content"] == "channels"
 
 
 def test_openai_compat_keeps_tool_calls_after_consecutive_assistant_messages() -> None:
