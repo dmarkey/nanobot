@@ -6,6 +6,7 @@ import asyncio
 import re
 import time
 import unicodedata
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -470,10 +471,8 @@ class TelegramChannel(BaseChannel):
         if not msg.metadata.get("_progress", False):
             self._stop_typing(msg.chat_id)
             if reply_to_message_id := msg.metadata.get("message_id"):
-                try:
+                with suppress(ValueError):
                     await self._remove_reaction(msg.chat_id, int(reply_to_message_id))
-                except ValueError:
-                    pass
 
         try:
             chat_id = int(msg.chat_id)
@@ -718,10 +717,8 @@ class TelegramChannel(BaseChannel):
                 return
             self._stop_typing(chat_id)
             if reply_to_message_id := meta.get("message_id"):
-                try:
+                with suppress(ValueError):
                     await self._remove_reaction(chat_id, int(reply_to_message_id))
-                except ValueError:
-                    pass
             thread_kwargs = {}
             if message_thread_id := meta.get("message_thread_id"):
                 thread_kwargs["message_thread_id"] = message_thread_id
@@ -1310,11 +1307,10 @@ class TelegramChannel(BaseChannel):
     async def _typing_loop(self, chat_id: str) -> None:
         """Repeatedly send 'typing' action until cancelled."""
         try:
-            while self._app:
-                await self._app.bot.send_chat_action(chat_id=int(chat_id), action="typing")
-                await asyncio.sleep(4)
-        except asyncio.CancelledError:
-            pass
+            with suppress(asyncio.CancelledError):
+                while self._app:
+                    await self._app.bot.send_chat_action(chat_id=int(chat_id), action="typing")
+                    await asyncio.sleep(4)
         except Exception as e:
             logger.debug("Typing indicator stopped for {}: {}", chat_id, e)
 
@@ -1399,3 +1395,34 @@ class TelegramChannel(BaseChannel):
         # Buttons are semantic options; when we can't render a keyboard, the user still needs to see them.
         return "\n".join(" ".join(f"[{label}]" for label in row) for row in buttons if row)
 
+    async def _on_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inline keyboard button clicks (callback queries)."""
+        if not update.callback_query or not update.effective_user:
+            return
+        query = update.callback_query
+        user = update.effective_user
+        chat_id = query.message.chat_id if query.message else None
+        sender_id = self._sender_id(user)
+        if not chat_id:
+            logger.warning("Callback query without chat_id")
+            return
+        button_label = query.data or ""
+        await query.answer()
+        if query.message:
+            with suppress(Exception):
+                await query.message.edit_reply_markup(reply_markup=None)
+        logger.debug("Inline button tap from {}: {}", sender_id, button_label)
+        self._start_typing(str(chat_id))
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=str(chat_id),
+            content=button_label,
+            metadata={
+                "callback_query_id": query.id,
+                "button_label": button_label,
+                "user_id": user.id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "is_callback": True,
+            },
+        )
