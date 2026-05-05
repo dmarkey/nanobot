@@ -20,7 +20,7 @@ from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import ExecToolConfig, WebToolsConfig
+from nanobot.config.schema import AgentDefaults, ExecToolConfig, WebToolsConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.utils.prompt_templates import render_template
 
@@ -81,10 +81,12 @@ class SubagentManager:
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
         default_max_iterations: int = 15,
+        max_iterations: int | None = None,
         parent_mcp_tools: ToolRegistry | None = None,
         disabled_tools: list[str] | None = None,
         disabled_skills: list[str] | None = None,
     ):
+        defaults = AgentDefaults()
         self.provider = provider
         self.workspace = workspace
         self.bus = bus
@@ -93,10 +95,12 @@ class SubagentManager:
         self.max_tool_result_chars = max_tool_result_chars
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
-        self.default_max_iterations = default_max_iterations
+        self.max_iterations = max_iterations if max_iterations is not None else default_max_iterations
+        self.default_max_iterations = self.max_iterations
         self._parent_mcp_tools = parent_mcp_tools
         self._disabled_tools = disabled_tools or []
         self.disabled_skills = set(disabled_skills or [])
+        self.max_concurrent_subagents = defaults.max_concurrent_subagents
         self.runner = AgentRunner(provider)
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_statuses: dict[str, SubagentStatus] = {}
@@ -235,7 +239,7 @@ class SubagentManager:
                 initial_messages=messages,
                 tools=tools,
                 model=self.model,
-                max_iterations=self.default_max_iterations,
+                max_iterations=self.max_iterations,
                 max_tool_result_chars=self.max_tool_result_chars,
                 hook=_SubagentHook(task_id, status),
                 max_iterations_message=(

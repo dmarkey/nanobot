@@ -49,6 +49,11 @@ async def test_spawn_tool_keeps_task_local_context() -> None:
     release = asyncio.Event()
 
     class _Manager:
+        max_concurrent_subagents = 1
+
+        def get_running_count(self) -> int:
+            return 0
+
         async def spawn(
             self,
             *,
@@ -157,6 +162,11 @@ async def test_spawn_tool_basic_set_context_and_execute() -> None:
     seen: list[tuple[str, str, str]] = []
 
     class _Manager:
+        max_concurrent_subagents = 1
+
+        def get_running_count(self) -> int:
+            return 0
+
         async def spawn(
             self,
             *,
@@ -185,6 +195,11 @@ async def test_spawn_tool_default_values_without_set_context() -> None:
     seen: list[tuple[str, str, str]] = []
 
     class _Manager:
+        max_concurrent_subagents = 1
+
+        def get_running_count(self) -> int:
+            return 0
+
         async def spawn(
             self,
             *,
