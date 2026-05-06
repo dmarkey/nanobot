@@ -199,8 +199,8 @@ class ChannelManager:
         """Start a channel and log any exceptions."""
         try:
             await channel.start()
-        except Exception as e:
-            logger.error("Failed to start channel {}: {}", name, e)
+        except Exception:
+            logger.exception("Failed to start channel {}", name)
 
     async def start_all(self) -> None:
         """Start all channels and the outbound dispatcher."""
@@ -255,8 +255,8 @@ class ChannelManager:
             try:
                 await channel.stop()
                 logger.info("Stopped {} channel", name)
-            except Exception as e:
-                logger.error("Error stopping {}: {}", name, e)
+            except Exception:
+                logger.exception("Error stopping {}", name)
 
     @staticmethod
     def _fingerprint_content(content: str) -> str:
@@ -420,9 +420,9 @@ class ChannelManager:
                 raise  # Propagate cancellation for graceful shutdown
             except Exception as e:
                 if attempt == max_attempts - 1:
-                    logger.error(
-                        "Failed to send to {} after {} attempts: {} - {}",
-                        msg.channel, max_attempts, type(e).__name__, e
+                    logger.exception(
+                        "Failed to send to {} after {} attempts",
+                        msg.channel, max_attempts
                     )
                     return
                 delay = _SEND_RETRY_DELAYS[min(attempt, len(_SEND_RETRY_DELAYS) - 1)]
