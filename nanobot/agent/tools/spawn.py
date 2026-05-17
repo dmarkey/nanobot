@@ -1,9 +1,12 @@
 """Spawn tool for creating background subagents."""
 
+from __future__ import annotations
+
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
 
 if TYPE_CHECKING:
@@ -18,15 +21,13 @@ if TYPE_CHECKING:
             StringSchema("Tool name or glob pattern (e.g. 'mcp_nta_*')"),
             description=(
                 "Optional list of tool names or glob patterns to enable for this subagent. "
-                "Only matching tools will be available. Omit to give the subagent all tools. "
-                "Builtin tools (read_file, exec, web_search, etc.) are always available "
-                "unless disabled by config — this filter applies to MCP tools."
+                "Only matching tools will be available. Omit to give the subagent all tools."
             ),
         ),
         required=["task"],
     )
 )
-class SpawnTool(Tool):
+class SpawnTool(Tool, ContextAware):
     """Tool to spawn a subagent for background task execution."""
 
     def __init__(self, manager: "SubagentManager"):
@@ -39,15 +40,16 @@ class SpawnTool(Tool):
             default=None,
         )
 
-    def set_context(self, channel: str, chat_id: str, effective_key: str | None = None) -> None:
-        """Set the origin context for subagent announcements."""
-        self._origin_channel.set(channel)
-        self._origin_chat_id.set(chat_id)
-        self._session_key.set(effective_key or f"{channel}:{chat_id}")
+    @classmethod
+    def create(cls, ctx: Any) -> Tool:
+        return cls(manager=ctx.subagent_manager)
 
-    def set_origin_message_id(self, message_id: str | None) -> None:
-        """Set the source message id for downstream deduplication."""
-        self._origin_message_id.set(message_id)
+    def set_context(self, ctx: RequestContext) -> None:
+        """Set the origin context for subagent announcements."""
+        self._origin_channel.set(ctx.channel)
+        self._origin_chat_id.set(ctx.chat_id)
+        self._session_key.set(ctx.session_key or f"{ctx.channel}:{ctx.chat_id}")
+        self._origin_message_id.set(ctx.message_id)
 
     @property
     def name(self) -> str:
@@ -61,11 +63,16 @@ class SpawnTool(Tool):
             "The subagent will complete the task and report back when done. "
             "For deliverables or existing projects, inspect the workspace first "
             "and use a dedicated subdirectory when helpful. "
-            "Use the 'tools' parameter to restrict which MCP tools the subagent "
-            "can use (e.g. ['mcp_nta_*'] for transport tools only)."
+            "Use the 'tools' parameter to restrict which tools the subagent can use."
         )
 
-    async def execute(self, task: str, label: str | None = None, tools: list[str] | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        task: str,
+        label: str | None = None,
+        tools: list[str] | None = None,
+        **kwargs: Any,
+    ) -> str:
         """Spawn a subagent to execute the given task."""
         running = self._manager.get_running_count()
         limit = self._manager.max_concurrent_subagents

@@ -20,6 +20,8 @@ from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameter
 class ResolveToolsTool(Tool):
     """Meta-tool that promotes deferred tools to active so the LLM can call them."""
 
+    _plugin_discoverable = False
+
     def __init__(self, registry: ToolRegistry):
         self._registry = registry
 
