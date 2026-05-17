@@ -5,7 +5,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { SettingsView } from "@/components/settings/SettingsView";
 import { ThreadShell } from "@/components/thread/ThreadShell";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
-import { preloadMarkdownText } from "@/components/MarkdownText";
+
 import { useSessions } from "@/hooks/useSessions";
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
@@ -157,23 +157,6 @@ export default function App() {
     return bootstrapWithSecret(saved);
   }, [bootstrapWithSecret]);
 
-  useEffect(() => {
-    const warm = () => preloadMarkdownText();
-    const win = globalThis as typeof globalThis & {
-      requestIdleCallback?: (
-        callback: IdleRequestCallback,
-        options?: IdleRequestOptions,
-      ) => number;
-      cancelIdleCallback?: (handle: number) => void;
-    };
-    if (typeof win.requestIdleCallback === "function") {
-      const id = win.requestIdleCallback(warm, { timeout: 1500 });
-      return () => win.cancelIdleCallback?.(id);
-    }
-    const id = globalThis.setTimeout(warm, 250);
-    return () => globalThis.clearTimeout(id);
-  }, []);
-
   if (state.status === "loading") {
     return (
       <div className="flex h-full w-full items-center justify-center">
@@ -250,7 +233,6 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
     key: string;
     label: string;
   } | null>(null);
-  const lastSessionsLen = useRef(0);
   const restartSawDisconnectRef = useRef(false);
   const [restartToast, setRestartToast] = useState<string | null>(null);
   const [isRestarting, setIsRestarting] = useState(false);
@@ -266,13 +248,7 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
     }
   }, [desktopSidebarOpen]);
 
-  useEffect(() => {
-    if (activeKey) return;
-    if (sessions.length > 0 && lastSessionsLen.current === 0) {
-      setActiveKey(sessions[0].key);
-    }
-    lastSessionsLen.current = sessions.length;
-  }, [sessions, activeKey]);
+
 
   const activeSession = useMemo<ChatSummary | null>(() => {
     if (!activeKey) return null;
@@ -335,9 +311,8 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
     setView("chat");
     setMobileSidebarOpen(false);
     setActiveKey((current) => {
-      if (current && sessions.some((session) => session.key === current)) {
-        return current;
-      }
+      if (!current) return null;
+      if (sessions.some((session) => session.key === current)) return current;
       return sessions[0]?.key ?? null;
     });
   }, [sessions]);
@@ -354,6 +329,12 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
     }
     client.sendMessage(chatId, "/restart");
   }, [activeSession?.chatId, client]);
+
+  useEffect(() => {
+    return client.onRuntimeModelUpdate((modelName) => {
+      onModelNameChange(modelName);
+    });
+  }, [client, onModelNameChange]);
 
   useEffect(() => {
     return client.onStatus((status) => {
@@ -473,18 +454,13 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
         </Sheet>
       ) : null}
 
-      <main className="flex h-full min-w-0 flex-1 flex-col">
-        {view === "settings" ? (
-          <SettingsView
-            theme={theme}
-            onToggleTheme={toggle}
-            onBackToChat={onBackToChat}
-            onModelNameChange={onModelNameChange}
-            onLogout={onLogout}
-            onRestart={onRestart}
-            isRestarting={isRestarting}
-          />
-        ) : (
+      <main className="relative flex h-full min-w-0 flex-1 flex-col">
+        <div
+          className={cn(
+            "absolute inset-0 flex flex-col",
+            view === "settings" && "invisible pointer-events-none",
+          )}
+        >
           <ThreadShell
             session={activeSession}
             title={headerTitle}
@@ -496,6 +472,19 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
             onToggleTheme={toggle}
             hideSidebarToggleOnDesktop={desktopSidebarOpen}
           />
+        </div>
+        {view === "settings" && (
+          <div className="absolute inset-0 flex flex-col">
+            <SettingsView
+              theme={theme}
+              onToggleTheme={toggle}
+              onBackToChat={onBackToChat}
+              onModelNameChange={onModelNameChange}
+              onLogout={onLogout}
+              onRestart={onRestart}
+              isRestarting={isRestarting}
+            />
+          </div>
         )}
       </main>
 

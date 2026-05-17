@@ -4,6 +4,7 @@ import type {
   Outbound,
   OutboundImageGeneration,
   OutboundMedia,
+  GoalStateWsPayload,
 } from "./types";
 
 /** WebSocket readyState constants, referenced by value to stay portable
@@ -14,6 +15,8 @@ const WS_CLOSING = 2;
 type Unsubscribe = () => void;
 type EventHandler = (ev: InboundEvent) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
+type RuntimeModelHandler = (modelName: string | null, modelPreset?: string | null) => void;
+type SessionUpdateHandler = (chatId: string) => void;
 
 /** Structured connection-level errors surfaced to the UI.
  *
@@ -58,11 +61,20 @@ export interface NanobotClientOptions {
 export class NanobotClient {
   private socket: WebSocket | null = null;
   private statusHandlers = new Set<StatusHandler>();
+  private runtimeModelHandlers = new Set<RuntimeModelHandler>();
+  private sessionUpdateHandlers = new Set<SessionUpdateHandler>();
   private errorHandlers = new Set<ErrorHandler>();
   // chat_id -> handlers listening on it
   private chatHandlers = new Map<string, Set<EventHandler>>();
+  /** Inbound frames received while no subscriber is registered (e.g. user switched away). */
+  private pendingInboundByChat = new Map<string, InboundEvent[]>();
+  private static readonly PENDING_INBOUND_MAX = 2000;
   // chat_ids we've attached to since connect; re-attached after reconnects
   private knownChats = new Set<string>();
+  /** Wall-clock run strip: updated from ``goal_status`` even with no ``onChat`` subscriber. */
+  private runStartedAtByChatId = new Map<string, number>();
+  /** Latest ``goal_state`` snapshot per ``chat_id`` (multi-session isolation). */
+  private goalStateByChatId = new Map<string, GoalStateWsPayload>();
   private pendingNewChat: PendingNewChat | null = null;
   // Frames queued while the socket is not yet OPEN
   private sendQueue: Outbound[] = [];
@@ -107,12 +119,56 @@ export class NanobotClient {
     };
   }
 
+  onRuntimeModelUpdate(handler: RuntimeModelHandler): Unsubscribe {
+    this.runtimeModelHandlers.add(handler);
+    return () => {
+      this.runtimeModelHandlers.delete(handler);
+    };
+  }
+
+  onSessionUpdate(handler: SessionUpdateHandler): Unsubscribe {
+    this.sessionUpdateHandlers.add(handler);
+    return () => {
+      this.sessionUpdateHandlers.delete(handler);
+    };
+  }
+
   /** Subscribe to transport-level faults (see :type:`StreamError`). */
   onError(handler: ErrorHandler): Unsubscribe {
     this.errorHandlers.add(handler);
     return () => {
       this.errorHandlers.delete(handler);
     };
+  }
+
+  /** Last ``goal_status`` ``started_at`` (unix sec) for *chatId*, if the turn is running. */
+  getRunStartedAt(chatId: string): number | null {
+    const v = this.runStartedAtByChatId.get(chatId);
+    return v === undefined ? null : v;
+  }
+
+  /** Last ``goal_state`` payload for *chatId*, if any frame has arrived this connection. */
+  getGoalState(chatId: string): GoalStateWsPayload | undefined {
+    return this.goalStateByChatId.get(chatId);
+  }
+
+  private recordGoalStatusForRunStrip(chatId: string, ev: InboundEvent): void {
+    if (ev.event !== "goal_status") return;
+    if (ev.status === "running" && typeof ev.started_at === "number") {
+      this.runStartedAtByChatId.set(chatId, ev.started_at);
+    } else {
+      this.runStartedAtByChatId.delete(chatId);
+    }
+  }
+
+  private recordGoalStateSnapshot(chatId: string, ev: InboundEvent): void {
+    if (ev.event === "goal_state") {
+      this.goalStateByChatId.set(chatId, ev.goal_state);
+      return;
+    }
+    if (ev.event === "turn_end" && ev.goal_state != null && typeof ev.goal_state === "object") {
+      this.goalStateByChatId.set(chatId, ev.goal_state);
+    }
   }
 
   /** Subscribe to events for a given chat_id. Auto-attaches on the next open. */
@@ -123,6 +179,14 @@ export class NanobotClient {
       this.chatHandlers.set(chatId, handlers);
     }
     handlers.add(handler);
+    const pending = this.pendingInboundByChat.get(chatId);
+    if (pending !== undefined && pending.length > 0) {
+      const flushed = pending.splice(0);
+      this.pendingInboundByChat.delete(chatId);
+      for (const ev of flushed) {
+        handler(ev);
+      }
+    }
     this.attach(chatId);
     return () => {
       const current = this.chatHandlers.get(chatId);
@@ -245,14 +309,54 @@ export class NanobotClient {
       return;
     }
 
+    if (parsed.event === "runtime_model_updated") {
+      this.emitRuntimeModelUpdate(parsed.model_name || null, parsed.model_preset ?? null);
+      return;
+    }
+
+    if (parsed.event === "session_updated") {
+      this.emitSessionUpdate(parsed.chat_id);
+      return;
+    }
+
     const chatId = (parsed as { chat_id?: string }).chat_id;
-    if (chatId) this.dispatch(chatId, parsed);
+    if (chatId) {
+      this.recordGoalStatusForRunStrip(chatId, parsed);
+      this.recordGoalStateSnapshot(chatId, parsed);
+      this.dispatch(chatId, parsed);
+    }
+  }
+
+  private emitRuntimeModelUpdate(modelName: string | null, modelPreset?: string | null): void {
+    for (const handler of this.runtimeModelHandlers) {
+      handler(modelName, modelPreset);
+    }
+  }
+
+  private emitSessionUpdate(chatId: string): void {
+    for (const handler of this.sessionUpdateHandlers) {
+      handler(chatId);
+    }
   }
 
   private dispatch(chatId: string, ev: InboundEvent): void {
     const handlers = this.chatHandlers.get(chatId);
-    if (!handlers) return;
-    for (const h of handlers) h(ev);
+    if (handlers !== undefined && handlers.size > 0) {
+      for (const h of handlers) {
+        h(ev);
+      }
+      return;
+    }
+    let q = this.pendingInboundByChat.get(chatId);
+    if (!q) {
+      q = [];
+      this.pendingInboundByChat.set(chatId, q);
+    }
+    q.push(ev);
+    const over = q.length - NanobotClient.PENDING_INBOUND_MAX;
+    if (over > 0) {
+      q.splice(0, over);
+    }
   }
 
   private handleClose(event?: { code?: number }): void {

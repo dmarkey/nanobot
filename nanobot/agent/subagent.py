@@ -12,15 +12,13 @@ from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.runner import AgentRunner, AgentRunSpec
-from nanobot.agent.skills import BUILTIN_SKILLS_DIR
-from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from nanobot.agent.tools.context import ToolContext
+from nanobot.agent.tools.file_state import FileStates
+from nanobot.agent.tools.loader import ToolLoader
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.search import GlobTool, GrepTool
-from nanobot.agent.tools.shell import ExecTool
-from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import AgentDefaults, ExecToolConfig, WebToolsConfig
+from nanobot.config.schema import AgentDefaults, ToolsConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.utils.prompt_templates import render_template
 
@@ -77,34 +75,61 @@ class SubagentManager:
         bus: MessageBus,
         max_tool_result_chars: int,
         model: str | None = None,
-        web_config: "WebToolsConfig | None" = None,
-        exec_config: "ExecToolConfig | None" = None,
+        tools_config: ToolsConfig | None = None,
         restrict_to_workspace: bool = False,
-        default_max_iterations: int = 15,
-        max_iterations: int | None = None,
-        parent_mcp_tools: ToolRegistry | None = None,
-        disabled_tools: list[str] | None = None,
+        default_max_iterations: int | None = None,
         disabled_skills: list[str] | None = None,
+        max_iterations: int | None = None,
     ):
         defaults = AgentDefaults()
         self.provider = provider
         self.workspace = workspace
         self.bus = bus
         self.model = model or provider.get_default_model()
-        self.web_config = web_config or WebToolsConfig()
+        self.tools_config = tools_config or ToolsConfig()
         self.max_tool_result_chars = max_tool_result_chars
-        self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
-        self.max_iterations = max_iterations if max_iterations is not None else default_max_iterations
-        self.default_max_iterations = self.max_iterations
-        self._parent_mcp_tools = parent_mcp_tools
-        self._disabled_tools = disabled_tools or []
         self.disabled_skills = set(disabled_skills or [])
+        self.max_iterations = (
+            max_iterations
+            if max_iterations is not None
+            else (
+                default_max_iterations
+                if default_max_iterations is not None
+                else defaults.subagent_max_iterations
+            )
+        )
+        self.default_max_iterations = self.max_iterations
         self.max_concurrent_subagents = defaults.max_concurrent_subagents
         self.runner = AgentRunner(provider)
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_statuses: dict[str, SubagentStatus] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
+
+    def _subagent_tools_config(self) -> ToolsConfig:
+        """Build a ToolsConfig scoped for subagent use."""
+        return ToolsConfig(
+            exec=self.tools_config.exec,
+            web=self.tools_config.web,
+            restrict_to_workspace=self.restrict_to_workspace,
+        )
+
+    def _build_tools(
+        self,
+        workspace: Path | None = None,
+        tools_config: ToolsConfig | None = None,
+    ) -> ToolRegistry:
+        """Build an isolated subagent tool registry via ToolLoader."""
+        root = self.workspace if workspace is None else workspace
+        registry = ToolRegistry()
+        cfg = tools_config if tools_config is not None else self._subagent_tools_config()
+        ctx = ToolContext(
+            config=cfg,
+            workspace=str(root.resolve()),
+            file_state_store=FileStates(),
+        )
+        ToolLoader().load(ctx, registry, scope="subagent")
+        return registry
 
     def set_provider(self, provider: LLMProvider, model: str) -> None:
         self.provider = provider
@@ -180,55 +205,9 @@ class SubagentManager:
             status.iteration = payload.get("iteration", status.iteration)
 
         try:
-            # Build subagent tools (no message tool, no spawn tool)
-            tools = ToolRegistry()
-            allowed_dir = self.workspace if (self.restrict_to_workspace or self.exec_config.sandbox) else None
-            extra_read = [BUILTIN_SKILLS_DIR] if allowed_dir else None
-            # Subagent gets its own FileStates so its read-dedup cache is
-            # isolated from the parent loop's sessions (issue #3571).
-            from nanobot.agent.tools.file_state import FileStates
-            file_states = FileStates()
-            tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir, extra_allowed_dirs=extra_read, file_states=file_states))
-            tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir, file_states=file_states))
-            tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir, file_states=file_states))
-            tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir, file_states=file_states))
-            tools.register(GlobTool(workspace=self.workspace, allowed_dir=allowed_dir, file_states=file_states))
-            tools.register(GrepTool(workspace=self.workspace, allowed_dir=allowed_dir, file_states=file_states))
-            if self.exec_config.enable:
-                tools.register(ExecTool(
-                    working_dir=str(self.workspace),
-                    timeout=self.exec_config.timeout,
-                    restrict_to_workspace=self.restrict_to_workspace,
-                    sandbox=self.exec_config.sandbox,
-                    path_append=self.exec_config.path_append,
-                    allowed_env_keys=self.exec_config.allowed_env_keys,
-                    allow_patterns=self.exec_config.allow_patterns,
-                    deny_patterns=self.exec_config.deny_patterns,
-                ))
-            if self.web_config.enable:
-                tools.register(
-                    WebSearchTool(
-                        config=self.web_config.search,
-                        proxy=self.web_config.proxy,
-                        user_agent=self.web_config.user_agent,
-                    )
-                )
-                tools.register(
-                    WebFetchTool(
-                        config=self.web_config.fetch,
-                        proxy=self.web_config.proxy,
-                        user_agent=self.web_config.user_agent,
-                    )
-                )
-            if self._parent_mcp_tools:
-                for name in self._parent_mcp_tools.tool_names:
-                    tool = self._parent_mcp_tools.get(name)
-                    if tool:
-                        tools.register(tool)
-                        logger.debug("Subagent [{}]: shared MCP tool '{}'", task_id, name)
+            tools = self._build_tools()
             if tool_filter:
                 tools.apply_inclusion_filter(tool_filter)
-            tools.apply_disabled_filter(self._disabled_tools)
             system_prompt = self._build_subagent_prompt()
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
@@ -242,12 +221,7 @@ class SubagentManager:
                 max_iterations=self.max_iterations,
                 max_tool_result_chars=self.max_tool_result_chars,
                 hook=_SubagentHook(task_id, status),
-                max_iterations_message=(
-                    "You have used all your available tool calls. Summarise:\n"
-                    "1. What you accomplished\n"
-                    "2. What remains to be done\n"
-                    "3. Exact parameters to pass if spawning a new subagent to finish"
-                ),
+                max_iterations_message="Task completed but no final response was generated.",
                 error_message=None,
                 fail_on_tool_error=True,
                 checkpoint_callback=_on_checkpoint,
@@ -269,10 +243,9 @@ class SubagentManager:
                     origin, "error", origin_message_id,
                 )
             else:
-                announce_status = "error" if result.stop_reason == "max_iterations" else "ok"
                 final_result = result.final_content or "Task completed but no final response was generated."
-                logger.info("Subagent [{}] completed ({})", task_id, result.stop_reason)
-                await self._announce_result(task_id, label, task, final_result, origin, announce_status, origin_message_id)
+                logger.info("Subagent [{}] completed successfully", task_id)
+                await self._announce_result(task_id, label, task, final_result, origin, "ok", origin_message_id)
 
         except Exception as e:
             status.phase = "error"

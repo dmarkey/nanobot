@@ -31,8 +31,10 @@ export function Sidebar(props: SidebarProps) {
   const normalizedQuery = query.trim().toLowerCase();
   const filteredSessions = useMemo(() => {
     if (!normalizedQuery) return props.sessions;
+    const terms = normalizedQuery.split(/\s+/).filter(Boolean);
     return props.sessions.filter((session) => {
       const haystack = [
+        session.title,
         session.preview,
         session.chatId,
         session.channel,
@@ -41,14 +43,14 @@ export function Sidebar(props: SidebarProps) {
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
-      return haystack.includes(normalizedQuery);
+      return terms.every((term) => haystack.includes(term));
     });
   }, [normalizedQuery, props.sessions]);
 
   return (
     <nav
       aria-label={t("sidebar.navigation")}
-      className="flex h-full w-full flex-col border-r border-sidebar-border/60 bg-sidebar text-sidebar-foreground"
+      className="flex h-full w-full min-w-0 flex-col border-r border-sidebar-border/60 bg-sidebar text-sidebar-foreground"
     >
       <div className="flex items-center justify-between px-3 pb-2.5 pt-3">
         <picture className="block min-w-0">
@@ -102,7 +104,7 @@ export function Sidebar(props: SidebarProps) {
           {t("sidebar.newChat")}
         </Button>
       </div>
-      <div className="flex-1 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <ChatList
           sessions={filteredSessions}
           activeKey={props.activeKey}
