@@ -12,11 +12,50 @@ import type {
 const WS_OPEN = 1;
 const WS_CLOSING = 2;
 
+/** Inbound WebSocket ``console.log`` / parse-failure ``console.warn``.
+ *
+ * - **Dev** (non-production bundle): **on by default** — messages appear at default log level.
+ * - **Production**: off unless ``localStorage.setItem('nanobot_debug_ws','1')`` (or ``true``).
+ * - **Silence anywhere**: ``localStorage.setItem('nanobot_debug_ws','0')`` (or ``false`` / ``off``).
+ * Values are read on every frame; no reload needed.
+ */
+function wsInboundDebugEnabled(): boolean {
+  if (typeof globalThis === "undefined") return false;
+  try {
+    if (import.meta.env.MODE === "test") return false;
+    const ls = (globalThis as unknown as { localStorage?: Storage }).localStorage;
+    const raw = ls?.getItem("nanobot_debug_ws")?.trim().toLowerCase() ?? "";
+    if (raw === "0" || raw === "false" || raw === "off" || raw === "no") {
+      return false;
+    }
+    if (raw === "1" || raw === "true" || raw === "on" || raw === "yes") {
+      return true;
+    }
+    return !import.meta.env.PROD;
+  } catch {
+    return !import.meta.env.PROD;
+  }
+}
+
+/** Shorten streaming text fields so logging stays usable for huge deltas. */
+function summarizeInboundWsPayload(ev: InboundEvent): unknown {
+  const kind = (ev as { event?: string }).event;
+  if (kind !== "delta" && kind !== "reasoning_delta") return ev;
+  const row = { ...(ev as object) } as Record<string, unknown>;
+  const text = typeof row.text === "string" ? row.text : "";
+  const max = 240;
+  if (text.length > max) {
+    row.text = `${text.slice(0, max)}… (${text.length} chars)`;
+  }
+  return row;
+}
+
 type Unsubscribe = () => void;
 type EventHandler = (ev: InboundEvent) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
 type RuntimeModelHandler = (modelName: string | null, modelPreset?: string | null) => void;
-type SessionUpdateHandler = (chatId: string) => void;
+type SessionUpdateScope = "metadata" | "thread" | string;
+type SessionUpdateHandler = (chatId: string, scope?: SessionUpdateScope) => void;
 
 /** Structured connection-level errors surfaced to the UI.
  *
@@ -289,7 +328,18 @@ export class NanobotClient {
     try {
       parsed = JSON.parse(typeof ev.data === "string" ? ev.data : "") as InboundEvent;
     } catch {
+      if (wsInboundDebugEnabled()) {
+        const raw = typeof ev.data === "string" ? ev.data : String(ev.data);
+        console.warn(
+          "[nanobot ws inbound] invalid JSON",
+          raw.length > 400 ? `${raw.slice(0, 400)}… (${raw.length} chars)` : raw,
+        );
+      }
       return;
+    }
+
+    if (wsInboundDebugEnabled()) {
+      console.log("[nanobot ws inbound]", summarizeInboundWsPayload(parsed));
     }
 
     if (parsed.event === "ready") {
@@ -315,7 +365,7 @@ export class NanobotClient {
     }
 
     if (parsed.event === "session_updated") {
-      this.emitSessionUpdate(parsed.chat_id);
+      this.emitSessionUpdate(parsed.chat_id, parsed.scope);
       return;
     }
 
@@ -333,9 +383,9 @@ export class NanobotClient {
     }
   }
 
-  private emitSessionUpdate(chatId: string): void {
+  private emitSessionUpdate(chatId: string, scope?: SessionUpdateScope): void {
     for (const handler of this.sessionUpdateHandlers) {
-      handler(chatId);
+      handler(chatId, scope);
     }
   }
 

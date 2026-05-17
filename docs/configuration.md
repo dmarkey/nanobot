@@ -26,7 +26,52 @@ Instead of storing secrets directly in `config.json`, you can use `${VAR_NAME}` 
 }
 ```
 
-For **systemd** deployments, use `EnvironmentFile=` in the service unit to load variables from a file that only the deploying user can read:
+Any string value in `config.json` can use `${VAR_NAME}`. Resolution runs once at startup, in memory only — resolved values are never written back to disk, so editing config through `nanobot onboard` or the WebUI preserves the placeholder.
+
+If a referenced variable is unset, nanobot fails fast at startup with `ValueError: Environment variable 'NAME' referenced in config is not set`.
+
+### More examples
+
+**MCP servers** — both stdio `env` and HTTP `headers`:
+
+```json
+{
+  "tools": {
+    "mcpServers": {
+      "github": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
+      },
+      "remote": {
+        "url": "https://example.com/mcp/",
+        "headers": { "Authorization": "Bearer ${REMOTE_MCP_TOKEN}" }
+      }
+    }
+  }
+}
+```
+
+**Web search providers:**
+
+```json
+{
+  "tools": {
+    "web": {
+      "search": {
+        "provider": "brave",
+        "apiKey": "${BRAVE_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+### Loading variables at startup
+
+Pick whatever fits your deployment — nanobot only reads `os.environ` at startup, so any mechanism that populates the process environment works.
+
+**systemd** — use `EnvironmentFile=` in the service unit to load variables from a file that only the deploying user can read:
 
 ```ini
 # /etc/systemd/system/nanobot.service (excerpt)
@@ -40,6 +85,35 @@ ExecStart=...
 # /home/youruser/nanobot_secrets.env (mode 600, owned by youruser)
 TELEGRAM_TOKEN=your-token-here
 IMAP_PASSWORD=your-password-here
+```
+
+**Docker** — pass an env file to the locally built image (one `KEY=VALUE` per line), or use `-e KEY=value`:
+
+```bash
+docker run --rm --env-file=./nanobot.env \
+  -v ~/.nanobot:/home/nanobot/.nanobot \
+  nanobot agent -m "Hello"
+```
+
+**direnv** — drop a `.envrc` in your working directory and run `direnv allow`:
+
+```bash
+# .envrc (auto-loaded by direnv)
+export TELEGRAM_TOKEN=your-token-here
+export ANTHROPIC_API_KEY=...
+```
+
+**Secret managers (1Password, Bitwarden, pass)** — wrap the process so secrets only exist as env vars for the lifetime of the run, never on disk:
+
+```bash
+# 1Password — references in .env.tpl look like `op://Vault/Item/field`
+op run --env-file=.env.tpl -- nanobot agent
+
+# pass (passwordstore.org)
+ANTHROPIC_API_KEY="$(pass show api/anthropic)" nanobot agent
+
+# Bitwarden
+ANTHROPIC_API_KEY="$(bw get password api/anthropic)" nanobot agent
 ```
 
 ## Providers
@@ -80,6 +154,7 @@ IMAP_PASSWORD=your-password-here
 | `longcat` | LLM (LongCat) | [longcat.chat](https://longcat.chat/platform/docs/zh/) |
 | `ollama` | LLM (local, Ollama) | — |
 | `lm_studio` | LLM (local, LM Studio) | — |
+| `atomic_chat` | LLM (local, [Atomic Chat](https://atomic.chat/)) | — |
 | `mistral` | LLM | [docs.mistral.ai](https://docs.mistral.ai/) |
 | `stepfun` | LLM (Step Fun/阶跃星辰) | [platform.stepfun.com](https://platform.stepfun.com) |
 | `ovms` | LLM (local, OpenVINO Model Server) | [docs.openvino.ai](https://docs.openvino.ai/2026/model-server/ovms_docs_llm_quickstart.html) |
@@ -503,6 +578,36 @@ ollama run llama3.2
 </details>
 
 <details>
+<summary><b>Atomic Chat (local)</b></summary>
+
+[Atomic Chat](https://atomic.chat/) is a local-first desktop app that exposes an **OpenAI-compatible** HTTP API (default `http://localhost:1337/v1`). Start Atomic Chat and enable the local API server, then point nanobot at it.
+
+**1. Add to config** (partial — merge into `~/.nanobot/config.json`):
+
+```json
+{
+  "providers": {
+    "atomic_chat": {
+      "apiKey": null,
+      "apiBase": "http://localhost:1337/v1"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "provider": "atomic_chat",
+      "model": "your-model-id-from-atomic-chat"
+    }
+  }
+}
+```
+
+> **Note:** Set `apiKey` to `null` if your Atomic Chat server does not require a key. If it does, set `apiKey` (or the `ATOMIC_CHAT_API_KEY` environment variable) to the value Atomic Chat expects. The `model` string must match the model id Atomic Chat exposes on its OpenAI-compatible endpoint.
+
+> `provider: "auto"` also works when `providers.atomic_chat.apiBase` is configured, but setting `"provider": "atomic_chat"` is the clearest option.
+
+</details>
+
+<details>
 <summary><b>OpenVINO Model Server (local / OpenAI-compatible)</b></summary>
 
 Run LLMs locally on Intel GPUs using [OpenVINO Model Server](https://docs.openvino.ai/2026/model-server/ovms_docs_llm_quickstart.html). OVMS exposes an OpenAI-compatible API at `/v3`.
@@ -886,7 +991,7 @@ By default, web search uses `duckduckgo`, and it works out of the box without an
     "web": {
       "search": {
         "provider": "brave",
-        "apiKey": "BSA..."
+        "apiKey": "${BRAVE_API_KEY}"
       }
     }
   }
@@ -900,7 +1005,7 @@ By default, web search uses `duckduckgo`, and it works out of the box without an
     "web": {
       "search": {
         "provider": "tavily",
-        "apiKey": "tvly-..."
+        "apiKey": "${TAVILY_API_KEY}"
       }
     }
   }
@@ -914,7 +1019,7 @@ By default, web search uses `duckduckgo`, and it works out of the box without an
     "web": {
       "search": {
         "provider": "jina",
-        "apiKey": "jina_..."
+        "apiKey": "${JINA_API_KEY}"
       }
     }
   }
@@ -928,7 +1033,7 @@ By default, web search uses `duckduckgo`, and it works out of the box without an
     "web": {
       "search": {
         "provider": "kagi",
-        "apiKey": "your-kagi-api-key"
+        "apiKey": "${KAGI_API_KEY}"
       }
     }
   }
@@ -942,7 +1047,7 @@ By default, web search uses `duckduckgo`, and it works out of the box without an
     "web": {
       "search": {
         "provider": "olostep",
-        "apiKey": "YOUR_OLOSTEP_API_KEY"
+        "apiKey": "${OLOSTEP_API_KEY}"
       }
     }
   }
@@ -1104,6 +1209,8 @@ MCP tools are automatically discovered and registered on startup. The LLM can us
 
 > [!TIP]
 > For production deployments, set `"restrictToWorkspace": true` and `"tools.exec.sandbox": "bwrap"` in your config to sandbox the agent.
+
+For API keys, tokens, and other secrets, see [Environment Variables for Secrets](#environment-variables-for-secrets) — avoid storing them directly in `config.json`.
 
 | Option | Default | Description |
 |--------|---------|-------------|

@@ -117,58 +117,65 @@
     --cjk-line-height: 1.625;
   }
 
-  /* L→R sheen over solid label text (overlay stripe). Avoids ``background-clip:
-     text`` loop seams that read as RTL “erase” or one-frame transparent glyphs. */
-  @keyframes reasoning-sheen-ltr {
+  /* L→R sheen clipped to live activity labels. The highlight lives inside
+     the glyphs, not in the row background, so dark mode stays quiet. */
+  @keyframes streaming-text-sheen-ltr {
     0% {
-      left: -44%;
+      background-position: 140% 50%;
     }
     100% {
-      left: 118%;
+      background-position: -40% 50%;
     }
   }
-  .reasoning-sheen-track {
+  .streaming-text-sheen {
+    position: relative;
+    color: hsl(var(--muted-foreground));
+  }
+  .streaming-text-sheen::after {
+    content: attr(data-sheen-text);
     position: absolute;
     inset: 0;
-    z-index: 1;
+    display: block;
     overflow: hidden;
-    border-radius: 2px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     pointer-events: none;
-  }
-  .reasoning-sheen-stripe {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 44%;
-    min-width: 3.25rem;
-    left: -44%;
-    border-radius: inherit;
+    color: transparent;
     background: linear-gradient(
       90deg,
       transparent 0%,
-      hsl(0 0% 100% / 0.07) 34%,
-      hsl(0 0% 100% / 0.76) 50%,
-      hsl(0 0% 100% / 0.07) 66%,
+      transparent 38%,
+      hsl(var(--foreground) / 0.98) 50%,
+      transparent 62%,
       transparent 100%
     );
-    mix-blend-mode: soft-light;
-    opacity: 0.95;
-    animation: reasoning-sheen-ltr 5.2s linear infinite;
+    background-size: 260% 100%;
+    background-position: 140% 50%;
+    background-repeat: no-repeat;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: streaming-text-sheen-ltr 2.8s ease-in-out infinite;
   }
-  .dark .reasoning-sheen-stripe {
-    mix-blend-mode: overlay;
-    opacity: 1;
+  .dark .streaming-text-sheen::after {
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      transparent 38%,
+      hsl(var(--foreground) / 0.98) 50%,
+      transparent 62%,
+      transparent 100%
+    );
   }
   @media (prefers-reduced-motion: reduce) {
-    .reasoning-sheen-stripe {
+    .streaming-text-sheen::after {
       animation: none;
-      opacity: 0;
-      visibility: hidden;
+      content: "";
     }
   }
 
   /** Goal halo: pale sky blue (not ``--primary``, which often reads as neutral gray). */
-  @keyframes thread-goal-glow-breathe {
+  @keyframes goal-shell-glow-breathe {
     0%,
     100% {
       filter: drop-shadow(0 0 10px hsl(204 72% 52% / 0.22))
@@ -179,10 +186,10 @@
         drop-shadow(0 0 38px hsl(199 85% 55% / 0.2));
     }
   }
-  .thread-goal-shell-glow {
-    animation: thread-goal-glow-breathe 4.8s ease-in-out infinite;
+  .goal-shell-glow {
+    animation: goal-shell-glow-breathe 4.8s ease-in-out infinite;
   }
-  @keyframes thread-goal-glow-breathe-dark {
+  @keyframes goal-shell-glow-breathe-dark {
     0%,
     100% {
       filter: drop-shadow(0 0 12px hsl(198 90% 72% / 0.28))
@@ -193,15 +200,15 @@
         drop-shadow(0 0 42px hsl(195 100% 70% / 0.24));
     }
   }
-  .dark .thread-goal-shell-glow {
-    animation-name: thread-goal-glow-breathe-dark;
+  .dark .goal-shell-glow {
+    animation-name: goal-shell-glow-breathe-dark;
   }
   @media (prefers-reduced-motion: reduce) {
-    .thread-goal-shell-glow {
+    .goal-shell-glow {
       animation: none;
       filter: drop-shadow(0 0 14px hsl(204 70% 50% / 0.24));
     }
-    .dark .thread-goal-shell-glow {
+    .dark .goal-shell-glow {
       filter: drop-shadow(0 0 14px hsl(198 88% 70% / 0.32));
     }
   }

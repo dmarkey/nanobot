@@ -73,6 +73,7 @@ This is a fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot) with the fol
 
 ## 📢 News
 
+- **2026-05-15** 🚀 Released **v0.2.0** — **`/goal`** holds sustained objectives across turns, WebUI now ships inside the wheel, image generation end to end, 5 new providers with `fallback_models`, and a real agent-loop refactor. Please see [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.2.0) for details.
 - **2026-05-14** 🎯 **`/goal`** for long-term objectives, visible multi-step progress, long-horizon missions in chat.
 - **2026-05-13** 🧠 Streaming reasoning before answers, automatic backup models, smoother plug-in reconnects.
 - **2026-05-12** 🎛️ Saved model presets with WebUI badge, simpler plug-in tools, quieter Feishu topic threads.
@@ -264,10 +265,9 @@ nanobot agent
 - Want to run nanobot in chat apps like Telegram, Discord, WeChat or Feishu? See [Chat Apps](./docs/chat-apps.md)
 - Want Docker or Linux service deployment? See [Deployment](./docs/deployment.md)
 
-## 🧪 WebUI (Development)
+## 🌐 WebUI
 
-> [!NOTE]
-> The WebUI development workflow currently requires a source checkout and is not yet shipped together with the official packaged release. See [WebUI Document](./webui/README.md) for full WebUI development docs and build steps.
+The WebUI ships **inside the published wheel** — no extra build step. Just enable the WebSocket channel and open it in your browser.
 
 <p align="center">
   <img src="images/nanobot_webui.png" alt="nanobot webui preview" width="900">
@@ -285,13 +285,12 @@ nanobot agent
 nanobot gateway
 ```
 
-**3. Start the webui dev server**
+**3. Open the WebUI**
 
-```bash
-cd webui
-bun install
-bun run dev
-```
+Visit [`http://127.0.0.1:8765`](http://127.0.0.1:8765) in your browser. To open it from another device on your LAN, see [WebUI docs → LAN access](./webui/README.md#access-from-another-device-lan).
+
+> [!TIP]
+> Working on the WebUI itself? Check out [`webui/README.md`](./webui/README.md) for the Vite dev server (HMR) workflow.
 
 ## 🏗️ Architecture
 

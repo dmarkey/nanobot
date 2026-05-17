@@ -222,9 +222,7 @@
       "goalStateStrip": "Tujuan · {{label}}",
       "goalStateFallback": "Tujuan",
       "goalStateExpandAria": "Lihat tujuan lengkap",
-      "goalStateSheetTitle": "Tujuan thread",
-      "goalStateSummaryHeading": "Ringkasan",
-      "goalStateObjectiveHeading": "Tujuan",
+      "goalStateSheetTitle": "Tujuan",
       "send": "Kirim pesan",
       "stop": "Hentikan respons",
       "attachImage": "Lampirkan gambar",
@@ -302,9 +300,11 @@
             "description": "Daftar perintah slash yang tersedia."
           }
         }
-      }
+      },
+      "goalStateCloseAria": "Tutup tujuan"
     },
-    "scrollToBottom": "Gulir ke bawah"
+    "scrollToBottom": "Gulir ke bawah",
+    "loadEarlier": "Muat pesan sebelumnya"
   },
   "message": {
     "streaming": "sedang mengalir",

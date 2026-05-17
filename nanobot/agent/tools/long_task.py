@@ -83,13 +83,10 @@ class _GoalToolsMixin(ContextAware):
 @tool_parameters(
     tool_parameters_schema(
         goal=StringSchema(
-            "Full objective text for sustained execution on this chat thread. "
-            "Required: read the entire **long-goal** skill before composing this argument "
-            "(locate **long-goal** in the skills listing and open its file path, e.g. read_file)—do **not** "
-            "call `long_task` until you have read it. "
-            "Apply that skill literally: desired outcomes and acceptance criteria; "
-            "idempotent, self-contained wording (safe across compaction and resume; "
-            "no duplicate destructive steps); explicit deliverables, scope boundaries, and verification.",
+            "Sustained objective for this chat thread. First read the built-in **long-goal** skill, "
+            "especially its Start fast section, then call this promptly once the user's intent is clear. "
+            "The goal must still be idempotent, self-contained, bounded, and explicit about done-ness; "
+            "do not delay this tool call to over-plan, research, or decide execution details.",
             max_length=12_000,
         ),
         ui_summary=StringSchema(
@@ -123,16 +120,13 @@ class LongTaskTool(Tool, _GoalToolsMixin):
     @property
     def description(self) -> str:
         return (
-            "Declare a sustained objective for this conversation. "
-            "Before calling: read the **long-goal** skill from its path in the skills listing—goals must be "
-            "idempotent and self-contained (clear end state, scope, verification), "
-            "not brittle step lists that break on retry or compaction. "
-            "Execution stays on the main agent across turns (use normal tools). "
-            "The active objective is mirrored each turn under Runtime Context as "
-            "\"Goal (active):\" plus the stored text. "
-            "When—and only when—the objective is fully satisfied, call complete_goal. "
-            "Do not call complete_goal for partial progress or because you are tired. "
-            "If an objective is already active, finish or complete_goal before starting another."
+            "Mark this thread as a sustained long-running task. "
+            "First read the built-in **long-goal** skill, especially its Start fast section; then call this "
+            "as soon as the user's intent is clear. Write a good idempotent goal, but do not delay the tool "
+            "call with long planning, research, or execution-detail thinking. "
+            "The active goal is mirrored in Runtime Context each turn. Use normal tools until done, then call "
+            "complete_goal when the objective is satisfied, cancelled, or replaced. "
+            "If a goal is already active, finish it or call complete_goal before registering another."
         )
 
     async def execute(self, goal: str, ui_summary: str | None = None, **kwargs: Any) -> str:

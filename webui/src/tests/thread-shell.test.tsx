@@ -8,7 +8,7 @@ import type { UIMessage } from "@/lib/types";
 function makeClient() {
   const errorHandlers = new Set<(err: { kind: string }) => void>();
   const chatHandlers = new Map<string, Set<(ev: import("@/lib/types").InboundEvent) => void>>();
-  const sessionUpdateHandlers = new Set<(chatId: string) => void>();
+  const sessionUpdateHandlers = new Set<(chatId: string, scope?: string) => void>();
   const goalStateByChatId = new Map<string, import("@/lib/types").GoalStateWsPayload>();
   return {
     status: "open" as const,
@@ -34,7 +34,7 @@ function makeClient() {
         errorHandlers.delete(handler);
       };
     },
-    onSessionUpdate: (handler: (chatId: string) => void) => {
+    onSessionUpdate: (handler: (chatId: string, scope?: string) => void) => {
       sessionUpdateHandlers.add(handler);
       return () => {
         sessionUpdateHandlers.delete(handler);
@@ -49,8 +49,8 @@ function makeClient() {
       }
       for (const h of chatHandlers.get(chatId) ?? []) h(ev);
     },
-    _emitSessionUpdate(chatId: string) {
-      for (const h of sessionUpdateHandlers) h(chatId);
+    _emitSessionUpdate(chatId: string, scope?: string) {
+      for (const h of sessionUpdateHandlers) h(chatId, scope);
     },
     sendMessage: vi.fn(),
     newChat: vi.fn(),
@@ -593,7 +593,7 @@ describe("ThreadShell", () => {
     await waitFor(() => expect(screen.getByText("live assistant reply")).toBeInTheDocument());
   });
 
-  it("replaces live streamed content with canonical history after turn end", async () => {
+  it("does not refetch thread history on turn_end", async () => {
     const client = makeClient();
     let historyCalls = 0;
     vi.stubGlobal(
@@ -646,8 +646,55 @@ describe("ThreadShell", () => {
       });
     });
 
-    await waitFor(() => expect(screen.getByText("canonical markdown answer")).toBeInTheDocument());
-    expect(screen.queryByText("live half-parsed | markdown")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("live half-parsed | markdown")).toBeInTheDocument());
+    expect(screen.queryByText("canonical markdown answer")).not.toBeInTheDocument();
+    expect(historyCalls).toBe(1);
+  });
+
+  it("does not refetch thread history for metadata-only session updates", async () => {
+    const client = makeClient();
+    let historyCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("websocket%3Achat-a/webui-thread")) {
+          historyCalls += 1;
+          return httpJson(
+            transcriptFromSimpleMessages([
+              { role: "user", content: "question" },
+              { role: "assistant", content: "answer" },
+            ]),
+          );
+        }
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({}),
+        };
+      }),
+    );
+
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("chat-a")}
+          title="Chat chat-a"
+          onToggleSidebar={() => {}}
+          onNewChat={() => {}}
+        />,
+      ),
+    );
+
+    await waitFor(() => expect(screen.getByText("answer")).toBeInTheDocument());
+    expect(historyCalls).toBe(1);
+
+    await act(async () => {
+      client._emitSessionUpdate("chat-a", "metadata");
+    });
+
+    expect(historyCalls).toBe(1);
   });
 
   it("scrolls to the bottom after loading a session from the blank new-chat page", async () => {

@@ -9,12 +9,17 @@ from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse
-from nanobot.session.manager import Session
-from nanobot.utils.webui_titles import (
+from nanobot.session.goal_state import GOAL_STATE_KEY
+from nanobot.session.manager import Session, SessionManager
+from nanobot.utils.webui_turn_helpers import (
+    TITLE_GENERATION_MAX_TOKENS,
+    TITLE_GENERATION_REASONING_EFFORT,
     WEBUI_SESSION_METADATA_KEY,
     WEBUI_TITLE_METADATA_KEY,
+    WebuiTurnCoordinator,
     maybe_generate_webui_title,
 )
+from nanobot.utils.llm_runtime import LLMRuntime
 
 
 def _mk_loop() -> AgentLoop:
@@ -30,6 +35,22 @@ def _make_full_loop(tmp_path: Path) -> AgentLoop:
     provider.get_default_model.return_value = "test-model"
     provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="Test title"))
     return AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+
+
+def test_agent_loop_llm_runtime_reflects_current_provider_and_model(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    runtime = loop.llm_runtime()
+
+    assert runtime.provider is loop.provider
+    assert runtime.model == "test-model"
+
+    next_provider = MagicMock()
+    loop.provider = next_provider
+    loop.model = "next-model"
+    runtime = loop.llm_runtime()
+
+    assert runtime.provider is next_provider
+    assert runtime.model == "next-model"
 
 
 @pytest.mark.asyncio
@@ -54,6 +75,11 @@ async def test_generate_webui_title_only_for_marked_webui_sessions(tmp_path: Pat
     assert generated is True
     assert session.metadata[WEBUI_TITLE_METADATA_KEY] == "优化 WebUI 侧边栏"
     loop.provider.chat_with_retry.assert_awaited_once()
+    assert loop.provider.chat_with_retry.await_args.kwargs["max_tokens"] == TITLE_GENERATION_MAX_TOKENS
+    assert (
+        loop.provider.chat_with_retry.await_args.kwargs["reasoning_effort"]
+        == TITLE_GENERATION_REASONING_EFFORT
+    )
 
 
 @pytest.mark.asyncio
@@ -76,6 +102,80 @@ async def test_generate_webui_title_skips_plain_websocket_sessions(tmp_path: Pat
     assert generated is False
     assert WEBUI_TITLE_METADATA_KEY not in session.metadata
     loop.provider.chat_with_retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generate_webui_title_ignores_command_only_sessions(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    session = loop.sessions.get_or_create("websocket:command-title")
+    session.metadata[WEBUI_SESSION_METADATA_KEY] = True
+    session.add_message("user", "/model deep", _command=True)
+    session.add_message(
+        "assistant",
+        "Switched model preset to `deep`.\n- Model: `deepseek-v4-pro`",
+        _command=True,
+    )
+    loop.sessions.save(session)
+
+    generated = await maybe_generate_webui_title(
+        sessions=loop.sessions,
+        session_key="websocket:command-title",
+        provider=loop.provider,
+        model=loop.model,
+    )
+
+    assert generated is False
+    assert WEBUI_TITLE_METADATA_KEY not in session.metadata
+    loop.provider.chat_with_retry.assert_not_awaited()
+
+
+def test_webui_title_update_uses_captured_llm_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = MessageBus()
+    sessions = SessionManager(tmp_path)
+    scheduled: list[object] = []
+    captured: dict[str, object] = {}
+
+    async def fake_title_after_turn(**kwargs: object) -> bool:
+        captured.update(kwargs)
+        return False
+
+    monkeypatch.setattr(
+        "nanobot.utils.webui_turn_helpers.maybe_generate_webui_title_after_turn",
+        fake_title_after_turn,
+    )
+    coordinator = WebuiTurnCoordinator(
+        bus=bus,
+        sessions=sessions,
+        schedule_background=lambda coro: scheduled.append(coro),
+    )
+    provider = MagicMock()
+    msg = InboundMessage(
+        channel="websocket",
+        sender_id="u1",
+        chat_id="chat1",
+        content="say hello",
+        metadata={"webui": True},
+    )
+
+    coordinator.capture_title_context(
+        "websocket:chat1",
+        msg,
+        LLMRuntime(provider, "turn-model"),
+    )
+    asyncio.run(coordinator.handle_turn_end(
+        msg,
+        session_key="websocket:chat1",
+        latency_ms=None,
+    ))
+
+    assert len(scheduled) == 1
+    asyncio.run(scheduled[0])  # type: ignore[arg-type]
+
+    assert captured["provider"] is provider
+    assert captured["model"] == "turn-model"
 
 
 def test_save_turn_skips_multimodal_user_when_only_runtime_context() -> None:
@@ -491,6 +591,58 @@ async def test_process_message_uses_context_chat_id_for_runtime_prompt(tmp_path:
     assert result.chat_id == "thread-777"
     assert loop.context.build_messages.call_args.kwargs["chat_id"] == "parent-456"
     assert loop._run_agent_loop.call_args.kwargs["chat_id"] == "thread-777"
+
+
+@pytest.mark.asyncio
+async def test_process_message_uses_explicit_session_metadata_for_goal_context(
+    tmp_path: Path,
+) -> None:
+    loop = _make_full_loop(tmp_path)
+    loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    chat_session = loop.sessions.get_or_create("websocket:chat-with-goal")
+    chat_session.metadata[GOAL_STATE_KEY] = {
+        "status": "active",
+        "objective": "This chat goal must not leak into heartbeat.",
+    }
+    loop.sessions.save(chat_session)
+    system_session = loop.sessions.get_or_create("heartbeat")
+    system_session.metadata = {}
+    loop.sessions.save(system_session)
+
+    loop.context.build_messages = MagicMock(  # type: ignore[method-assign]
+        return_value=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "runtime + heartbeat"},
+        ]
+    )
+    loop._run_agent_loop = AsyncMock(return_value=(  # type: ignore[method-assign]
+        "ok",
+        [],
+        [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "runtime + heartbeat"},
+            {"role": "assistant", "content": "ok"},
+        ],
+        "stop",
+        False,
+    ))
+
+    result = await loop._process_message(
+        InboundMessage(
+            channel="websocket",
+            sender_id="heartbeat",
+            chat_id="chat-with-goal",
+            content="heartbeat work",
+        ),
+        session_key="heartbeat",
+    )
+
+    assert result is not None
+    assert result.content == "ok"
+    kwargs = loop.context.build_messages.call_args.kwargs
+    assert kwargs["chat_id"] == "chat-with-goal"
+    assert kwargs["session_metadata"] is system_session.metadata
+    assert GOAL_STATE_KEY not in kwargs["session_metadata"]
 
 
 def test_set_tool_context_uses_effective_key_for_spawn_tool(tmp_path: Path) -> None:
