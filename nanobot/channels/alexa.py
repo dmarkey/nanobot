@@ -152,7 +152,8 @@ class AlexaChannel(BaseChannel):
 
     name = "alexa"
 
-    def __init__(self, config: AlexaConfig, bus: MessageBus):
+    def __init__(self, config: AlexaConfig | dict, bus: MessageBus):
+        config = config if isinstance(config, AlexaConfig) else AlexaConfig.model_validate(config)
         super().__init__(config, bus)
         self.config: AlexaConfig = config
         self._runner: web.AppRunner | None = None
