@@ -356,6 +356,15 @@ class AgentRunner:
                     messages.append(tool_message)
                     completed_tool_results.append(tool_message)
                 if fatal_error is not None:
+                    if type(fatal_error).__name__ == "AskUserNoResponse":
+                        final_content = ""
+                        stop_reason = "ask_user_timeout"
+                        context.final_content = final_content
+                        context.stop_reason = stop_reason
+                        if hook.wants_streaming():
+                            await hook.on_stream_end(context, resuming=False)
+                        await hook.after_iteration(context)
+                        break
                     error = f"Error: {type(fatal_error).__name__}: {fatal_error}"
                     final_content = error
                     stop_reason = "tool_error"
@@ -765,6 +774,10 @@ class AgentRunner:
                     )
                     tool_results.append(result)
                     batch_results.append(result)
+                    if type(result[2]).__name__ == "AskUserNoResponse":
+                        break
+            if any(type(error).__name__ == "AskUserNoResponse" for _, _, error in batch_results):
+                break
 
         results: list[Any] = []
         events: list[dict[str, str]] = []
@@ -865,6 +878,10 @@ class AgentRunner:
                 "status": "error",
                 "detail": str(exc),
             }
+            if type(exc).__name__ == "AskUserNoResponse":
+                event["status"] = "timeout"
+                timeout_s = getattr(exc, "timeout_s", 300)
+                return f"User did not respond within {timeout_s}s.", event, exc
             payload = f"Error: {type(exc).__name__}: {exc}"
             handled = self._classify_violation(
                 raw_text=str(exc),

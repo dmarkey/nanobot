@@ -121,22 +121,6 @@ class ChannelManager:
             except Exception as e:
                 logger.warning("{} channel not available: {}", name, e)
 
-        # Alexa channel (not yet in discover_all registry)
-        alexa_section = getattr(self.config.channels, "alexa", None)
-        if alexa_section and (
-            alexa_section.get("enabled", False) if isinstance(alexa_section, dict)
-            else getattr(alexa_section, "enabled", False)
-        ):
-            try:
-                from nanobot.channels.alexa import AlexaChannel
-                from nanobot.config.schema import AlexaConfig
-                if isinstance(alexa_section, dict):
-                    alexa_section = AlexaConfig.model_validate(alexa_section)
-                self.channels["alexa"] = AlexaChannel(alexa_section, self.bus)
-                logger.info("Alexa channel enabled")
-            except ImportError as e:
-                logger.warning("Alexa channel not available: {}", e)
-
         self._validate_allow_from()
 
     def _resolve_transcription_key(self, provider: str) -> str:

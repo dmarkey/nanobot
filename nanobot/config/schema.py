@@ -41,6 +41,18 @@ class ChannelsConfig(Base):
     transcription_language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}$")  # Optional ISO-639-1 hint for audio transcription
 
 
+class AlexaConfig(Base):
+    """Amazon Alexa Custom Skill channel configuration."""
+
+    enabled: bool = False
+    host: str = "0.0.0.0"
+    port: int = 8443  # Alexa requires 443, 8443, or 10443 for custom endpoints
+    endpoint_path: str = "/alexa"
+    verify_signatures: bool = True
+    allow_from: list[str] = Field(default_factory=lambda: ["*"])
+    launch_message: str = "Hi, I'm nanobot. What can I help you with?"
+
+
 class DreamConfig(Base):
     """Dream memory consolidation configuration."""
 
@@ -242,6 +254,9 @@ class GatewayConfig(Base):
     host: str = "127.0.0.1"  # Safer default: local-only bind.
     port: int = 18790
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    webhook_secret: str = ""
+    webhook_channel: str = ""
+    webhook_chat_id: str = ""
 
 
 class MCPServerConfig(Base):

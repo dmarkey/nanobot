@@ -830,6 +830,9 @@ class AgentLoop:
                 logger.warning("Error consuming inbound message: {}, continuing...", e)
                 continue
 
+            if self._resolve_interactive_response(msg):
+                continue
+
             raw = msg.content.strip()
             if self.commands.is_priority(raw):
                 await self._dispatch_command_inline(
@@ -879,6 +882,22 @@ class AgentLoop:
                 if t in self._active_tasks.get(k, [])
                 else None
             )
+
+    def _resolve_interactive_response(self, msg: InboundMessage) -> bool:
+        """Resolve pending interactive tool futures from channel callback messages."""
+        metadata = msg.metadata or {}
+        if metadata.get("_callback_query"):
+            for name in ("ask_user_choice", "confirm_action"):
+                tool = self.tools.get(name)
+                resolver = getattr(tool, "resolve", None)
+                if callable(resolver) and resolver(msg.channel, msg.chat_id, msg.content):
+                    return True
+            return False
+        if metadata.get("_location_response"):
+            tool = self.tools.get("ask_user_location")
+            resolver = getattr(tool, "resolve", None)
+            return bool(callable(resolver) and resolver(msg.channel, msg.chat_id, msg.content))
+        return False
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message: per-session serial, cross-session concurrent."""

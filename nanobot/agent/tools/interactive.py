@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Awaitable, Callable
 
 from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.bus.events import OutboundMessage
 
 # Channels that support interactive UI (inline keyboards, reply keyboards).
@@ -24,7 +25,7 @@ class AskUserNoResponse(BaseException):
         super().__init__(f"{tool_name} timed out after {timeout_s}s")
 
 
-class _InteractiveToolBase(Tool):
+class _InteractiveToolBase(Tool, ContextAware):
     """Shared plumbing for tools that present interactive UI and await user input."""
 
     def __init__(
@@ -40,10 +41,15 @@ class _InteractiveToolBase(Tool):
         self._default_message_id = default_message_id
         self._pending: dict[str, asyncio.Future[str]] = {}
 
-    def set_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
-        self._default_channel = channel
-        self._default_chat_id = chat_id
-        self._default_message_id = message_id
+    @classmethod
+    def create(cls, ctx: Any) -> Tool:
+        send_callback = ctx.bus.publish_outbound if getattr(ctx, "bus", None) is not None else None
+        return cls(send_callback=send_callback)
+
+    def set_context(self, ctx: RequestContext) -> None:
+        self._default_channel = ctx.channel
+        self._default_chat_id = ctx.chat_id
+        self._default_message_id = ctx.message_id
 
     def set_send_callback(self, callback: Callable[[OutboundMessage], Awaitable[None]]) -> None:
         self._send_callback = callback
