@@ -727,6 +727,8 @@ describe("App layout", () => {
     expect(within(settingsNav).getByRole("button", { name: "Web" })).toBeInTheDocument();
     expect(within(settingsNav).getByRole("button", { name: "Advanced" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+    fireEvent.click(within(settingsNav).getByRole("button", { name: "Appearance" }));
+    expect(screen.getByText("Brand logos")).toBeInTheDocument();
     fireEvent.click(within(settingsNav).getByRole("button", { name: "Models" }));
     expect(screen.getByText("AI")).toBeInTheDocument();
     const modelInput = screen.getByDisplayValue("openai/gpt-4o");
@@ -739,6 +741,8 @@ describe("App layout", () => {
     fireEvent.click(within(settingsNav).getByRole("button", { name: "Providers" }));
     expect(screen.getByText("OpenRouter")).toBeInTheDocument();
     expect(screen.getByText("Ant Ling")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-logo-openai")).toBeInTheDocument();
+    expect(screen.getByText(/Product names, logos, and brands/)).toBeInTheDocument();
     expect(screen.getAllByText("Not configured").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText("OpenAI"));
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
@@ -992,6 +996,73 @@ describe("App layout", () => {
     );
   });
 
+  it("opens search from the keyboard shortcut", async () => {
+    mockSessions = [
+      {
+        key: "websocket:chat-a",
+        channel: "websocket",
+        chatId: "chat-a",
+        createdAt: "2026-04-16T10:00:00Z",
+        updatedAt: "2026-04-16T10:00:00Z",
+        preview: "Existing chat",
+      },
+    ];
+
+    render(<App />);
+
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+    const dialog = await screen.findByRole("dialog", { name: "Search" });
+    expect(within(dialog).queryByText("Global actions")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("Existing chat")).toBeInTheDocument();
+
+    const textbox = within(dialog).getByRole("textbox", { name: "Search" });
+    fireEvent.change(textbox, { target: { value: "missing" } });
+    expect(within(dialog).queryByText("Existing chat")).not.toBeInTheDocument();
+
+    fireEvent.change(textbox, { target: { value: "existing" } });
+    expect(within(dialog).getByText("Existing chat")).toBeInTheDocument();
+
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Search" })).not.toBeInTheDocument(),
+    );
+    expect(createChatSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps large sidebars light while search still covers every chat", async () => {
+    mockSessions = Array.from({ length: 170 }, (_, index) => {
+      const chatId = `chat-${index}`;
+      return {
+        key: `websocket:${chatId}`,
+        channel: "websocket" as const,
+        chatId,
+        createdAt: new Date(Date.UTC(2026, 3, 16, 12, 0 - index)).toISOString(),
+        updatedAt: new Date(Date.UTC(2026, 3, 16, 12, 0 - index)).toISOString(),
+        title: index === 169 ? "Hidden target" : `Bulk chat ${index}`,
+        preview: "",
+      };
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    await waitFor(() =>
+      expect(within(sidebar).getByRole("button", { name: "Bulk chat 0" })).toBeInTheDocument(),
+    );
+    expect(within(sidebar).queryByText("Hidden target")).not.toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: "Show 10 more" })).toBeInTheDocument();
+
+    fireEvent.click(within(sidebar).getByRole("button", { name: "Search" }));
+    const dialog = await screen.findByRole("dialog", { name: "Search" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Search" }), {
+      target: { value: "hidden" },
+    });
+    expect(within(dialog).getByText("Hidden target")).toBeInTheDocument();
+  });
+
   it("opens a blank start page without creating an empty chat", async () => {
     mockSessions = [
       {
@@ -1025,10 +1096,16 @@ describe("App layout", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
     const desktopAside = container.querySelector("aside.lg\\:block") as HTMLElement;
-    await waitFor(() => expect(desktopAside.style.width).toBe("0px"));
+    await waitFor(() => expect(desktopAside.style.width).toBe("56px"));
 
     expect(screen.queryByRole("button", { name: "Start a new chat" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Toggle sidebar" }));
+    const rail = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    expect(within(rail).getByRole("button", { name: "New chat" })).toBeInTheDocument();
+    expect(within(rail).getByRole("button", { name: "Search" })).toBeInTheDocument();
+    expect(within(rail).getByRole("button", { name: "View" })).toBeInTheDocument();
+    expect(within(rail).queryByText("Existing chat")).not.toBeInTheDocument();
+
+    fireEvent.click(within(rail).getByRole("button", { name: "Toggle sidebar" }));
     await waitFor(() => expect(desktopAside.style.width).toBe("272px"));
 
     const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
