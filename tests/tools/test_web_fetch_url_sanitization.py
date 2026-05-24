@@ -26,10 +26,13 @@ class FakeResponse:
 
 
 class FakeStreamResponse:
+    status_code = 200
     headers = {"content-type": "text/html"}
     url = "https://example.com/page"
     async def __aenter__(self): return self
     async def __aexit__(self, *a): return False
+    async def aread(self):
+        raise AssertionError("non-image prefetch body should not be read")
 
 
 class FakeClient:
@@ -47,7 +50,6 @@ def _patch_env():
     with (
         patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public),
         patch("nanobot.agent.tools.web.httpx.AsyncClient", FakeClient),
-        patch("nanobot.agent.tools.web.CurlAsyncSession", FakeClient),
     ):
         yield
 
