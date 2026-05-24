@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import ContextAware, RequestContext
-from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
+from nanobot.agent.tools.schema import ArraySchema, NumberSchema, StringSchema, tool_parameters_schema
 
 if TYPE_CHECKING:
     from nanobot.agent.subagent import SubagentManager
@@ -23,6 +23,15 @@ if TYPE_CHECKING:
                 "Optional list of tool names or glob patterns to enable for this subagent. "
                 "Only matching tools will be available. Omit to give the subagent all tools."
             ),
+        ),
+        temperature=NumberSchema(
+            description=(
+                "Optional sampling temperature for the subagent "
+                "(0.0 = deterministic, higher = more creative). "
+                "Defaults to the provider's configured temperature."
+            ),
+            minimum=0.0,
+            maximum=2.0,
         ),
         required=["task"],
     )
@@ -71,6 +80,7 @@ class SpawnTool(Tool, ContextAware):
         task: str,
         label: str | None = None,
         tools: list[str] | None = None,
+        temperature: float | None = None,
         **kwargs: Any,
     ) -> str:
         """Spawn a subagent to execute the given task."""
@@ -90,4 +100,5 @@ class SpawnTool(Tool, ContextAware):
             session_key=self._session_key.get(),
             tool_filter=tools,
             origin_message_id=self._origin_message_id.get(),
+            temperature=temperature,
         )

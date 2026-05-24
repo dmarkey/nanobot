@@ -150,6 +150,7 @@ class SubagentManager:
         session_key: str | None = None,
         tool_filter: list[str] | None = None,
         origin_message_id: str | None = None,
+        temperature: float | None = None,
     ) -> str:
         """Spawn a subagent to execute a task in the background."""
         task_id = str(uuid.uuid4())[:8]
@@ -173,6 +174,7 @@ class SubagentManager:
                 status,
                 tool_filter=tool_filter,
                 origin_message_id=origin_message_id,
+                temperature=temperature,
             )
         )
         self._running_tasks[task_id] = bg_task
@@ -201,6 +203,7 @@ class SubagentManager:
         status: SubagentStatus,
         tool_filter: list[str] | None = None,
         origin_message_id: str | None = None,
+        temperature: float | None = None,
     ) -> None:
         """Execute the subagent task and announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
@@ -233,6 +236,7 @@ class SubagentManager:
                 initial_messages=messages,
                 tools=tools,
                 model=self.model,
+                temperature=temperature,
                 max_iterations=self.max_iterations,
                 max_tool_result_chars=self.max_tool_result_chars,
                 hook=_SubagentHook(task_id, status),
