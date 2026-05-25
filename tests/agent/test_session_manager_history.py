@@ -56,6 +56,20 @@ def test_list_sessions_includes_user_preview(tmp_path):
     assert rows[0]["preview"] == "帮我总结一下 OpenAI 的最新硬件计划"
 
 
+def test_list_sessions_bounds_preview_scan(tmp_path):
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("websocket:chat-long-preview")
+    for index in range(220):
+        session.add_message("assistant", f"assistant trace {index}")
+    session.add_message("user", "this should not force a full sidebar scan")
+    manager.save(session)
+
+    rows = manager.list_sessions()
+
+    assert rows[0]["key"] == "websocket:chat-long-preview"
+    assert rows[0]["preview"] == "assistant trace 0"
+
+
 # --- Original regression test (from PR 2075) ---
 
 def test_get_history_drops_orphan_tool_results_when_window_cuts_tool_calls():
@@ -87,6 +101,82 @@ def test_legitimate_tool_pairs_preserved_after_trim():
     tool_ids = [m["tool_call_id"] for m in history if m.get("role") == "tool"]
     assert len(tool_ids) == 10
     assert history[0]["role"] == "user"
+
+
+def test_get_history_omits_mcp_tool_calls_from_llm_replay():
+    """MCP calls are persisted for audit/UI but should not become LLM examples."""
+    session = Session(key="test:mcp-replay")
+    session.messages.append({"role": "user", "content": "check browser"})
+    session.messages.append({
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "mcp_call_1",
+                "type": "function",
+                "function": {"name": "mcp_browser_snapshot", "arguments": "{}"},
+            },
+        ],
+    })
+    session.messages.append({
+        "role": "tool",
+        "tool_call_id": "mcp_call_1",
+        "name": "mcp_browser_snapshot",
+        "content": "Saved snapshot to /tmp/mcp-output.txt",
+    })
+    session.messages.append({"role": "assistant", "content": "The page is loaded."})
+
+    history = session.get_history(max_messages=500)
+
+    assert history == [
+        {"role": "user", "content": "check browser"},
+        {"role": "assistant", "content": "The page is loaded."},
+    ]
+
+
+def test_get_history_preserves_non_mcp_tool_calls_when_mixed_with_mcp():
+    session = Session(key="test:mixed-tool-replay")
+    session.messages.append({"role": "user", "content": "inspect both"})
+    session.messages.append({
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "read_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            },
+            {
+                "id": "mcp_1",
+                "type": "function",
+                "function": {"name": "mcp_docs_search", "arguments": "{}"},
+            },
+        ],
+    })
+    session.messages.append({
+        "role": "tool",
+        "tool_call_id": "read_1",
+        "name": "read_file",
+        "content": "local file",
+    })
+    session.messages.append({
+        "role": "tool",
+        "tool_call_id": "mcp_1",
+        "name": "mcp_docs_search",
+        "content": "remote docs",
+    })
+
+    history = session.get_history(max_messages=500)
+
+    _assert_no_orphans(history)
+    assert history[1]["tool_calls"] == [
+        {
+            "id": "read_1",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        },
+    ]
+    assert [m.get("tool_call_id") for m in history if m.get("role") == "tool"] == ["read_1"]
 
 
 def test_retain_recent_legal_suffix_keeps_recent_messages():

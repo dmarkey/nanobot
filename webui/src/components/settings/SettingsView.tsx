@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  forwardRef,
   useMemo,
   useState,
   type Dispatch,
@@ -27,13 +28,12 @@ import {
   Hexagon,
   ImageIcon,
   Info,
-  KeyRound,
   Layers,
   Loader2,
   LogOut,
   Moon,
-  Package,
   PlayCircle,
+  Plus,
   Orbit,
   Palette,
   Pencil,
@@ -43,9 +43,11 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Blocks,
   Trash2,
   Triangle,
   Waves,
+  X,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -59,39 +61,66 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  createModelConfiguration,
   fetchSettings,
   fetchCliApps,
+  fetchMcpPresets,
+  importMcpConfig,
   runCliAppAction,
+  runMcpPresetAction,
+  saveCustomMcpServer,
   updateImageGenerationSettings,
+  updateMcpServerTools,
   updateProviderSettings,
   updateSettings,
   updateWebSearchSettings,
 } from "@/lib/api";
+import { notifyCliAppsChanged } from "@/lib/cli-app-events";
+import { notifyMcpPresetsChanged } from "@/lib/mcp-preset-events";
+import {
+  logoFallbackUrls,
+  providerBrand,
+  providerDisplayLabel,
+} from "@/lib/provider-brand";
 import { cn } from "@/lib/utils";
 import { useClient } from "@/providers/ClientProvider";
 import type {
   CliAppInfo,
   CliAppsPayload,
   ImageGenerationSettingsUpdate,
+  McpPresetInfo,
+  McpPresetsPayload,
   SettingsPayload,
   WebSearchSettingsUpdate,
 } from "@/lib/types";
 
-type SettingsSectionKey =
+export type SettingsSectionKey =
   | "overview"
   | "appearance"
   | "models"
-  | "providers"
   | "image"
   | "web"
-  | "cliApps"
+  | "apps"
   | "runtime"
   | "advanced";
 
 type LocalDensity = "comfortable" | "compact";
 type LocalActivityMode = "auto" | "expanded";
+type AppsKindFilter = "all" | "cli" | "mcp";
+type AppsCatalogItem =
+  | { id: string; kind: "cli"; app: CliAppInfo }
+  | { id: string; kind: "mcp"; preset: McpPresetInfo };
 
 interface LocalPreferences {
   density: LocalDensity;
@@ -110,8 +139,54 @@ interface AgentSettingsDraft {
   toolHintMaxLength: number;
 }
 
+interface ModelConfigurationDraft {
+  label: string;
+  provider: string;
+  model: string;
+}
+
 type PendingRestartSection = "runtime" | "web" | "image";
 type PendingRestartSections = Record<PendingRestartSection, boolean>;
+type ProviderApiType = "auto" | "chat_completions" | "responses";
+type ProviderForm = { apiKey: string; apiBase: string; apiType: ProviderApiType };
+type CustomMcpTransport = "stdio" | "streamableHttp" | "sse";
+
+const NANOBOT_ICON_SRC = "/brand/nanobot_icon.png";
+
+const FALLBACK_TIMEZONES = [
+  "UTC",
+  "Asia/Shanghai",
+  "Asia/Hong_Kong",
+  "Asia/Tokyo",
+  "Asia/Seoul",
+  "Asia/Singapore",
+  "Asia/Taipei",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Amsterdam",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Toronto",
+  "America/Sao_Paulo",
+  "Australia/Sydney",
+  "Pacific/Auckland",
+];
+
+interface CustomMcpForm {
+  name: string;
+  transport: CustomMcpTransport;
+  command: string;
+  args: string;
+  url: string;
+  env: string;
+  headers: string;
+  toolTimeout: string;
+}
 
 const LOCAL_PREFS_STORAGE_KEY = "nanobot-webui.settings-preferences";
 
@@ -121,6 +196,11 @@ const DEFAULT_LOCAL_PREFS: LocalPreferences = {
   codeWrap: true,
   brandLogos: true,
 };
+const OPENAI_API_TYPE_OPTIONS: Array<{ value: ProviderApiType; label: string }> = [
+  { value: "auto", label: "Auto" },
+  { value: "chat_completions", label: "Chat Completions" },
+  { value: "responses", label: "Responses" },
+];
 
 const LOCAL_UNCONFIGURED_PROVIDER_ORDER = new Map(
   ["vllm", "ollama", "lm_studio", "atomic_chat", "ovms"].map((name, index) => [
@@ -137,8 +217,21 @@ const EMPTY_PENDING_RESTART_SECTIONS: PendingRestartSections = {
   image: false,
 };
 
+const DEFAULT_CUSTOM_MCP_FORM: CustomMcpForm = {
+  name: "",
+  transport: "stdio",
+  command: "",
+  args: "",
+  url: "",
+  env: "",
+  headers: "",
+  toolTimeout: "30",
+};
+
 interface SettingsViewProps {
   theme: "light" | "dark";
+  initialSection?: SettingsSectionKey;
+  showSidebar?: boolean;
   onToggleTheme: () => void;
   onBackToChat: () => void;
   onModelNameChange: (modelName: string | null) => void;
@@ -178,6 +271,8 @@ function editableDefaultProvider(payload: SettingsPayload): string {
 
 export function SettingsView({
   theme,
+  initialSection = "overview",
+  showSidebar = true,
   onToggleTheme,
   onBackToChat,
   onModelNameChange,
@@ -189,24 +284,38 @@ export function SettingsView({
   const { token } = useClient();
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [cliApps, setCliApps] = useState<CliAppsPayload | null>(null);
+  const [mcpPresets, setMcpPresets] = useState<McpPresetsPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [cliAppsLoading, setCliAppsLoading] = useState(true);
+  const [mcpPresetsLoading, setMcpPresetsLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [modelConfigurationOpen, setModelConfigurationOpen] = useState(false);
+  const [modelConfigurationSaving, setModelConfigurationSaving] = useState(false);
+  const [modelConfigurationForm, setModelConfigurationForm] = useState<ModelConfigurationDraft>({
+    label: "",
+    provider: "",
+    model: "",
+  });
   const [cliAppsAction, setCliAppsAction] = useState<string | null>(null);
+  const [mcpPresetAction, setMcpPresetAction] = useState<string | null>(null);
   const [providerSaving, setProviderSaving] = useState<string | null>(null);
   const [webSearchSaving, setWebSearchSaving] = useState(false);
   const [imageGenerationSaving, setImageGenerationSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSectionKey>("overview");
+  const [activeSection, setActiveSection] = useState<SettingsSectionKey>(initialSection);
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [providerQuery, setProviderQuery] = useState("");
-  const [cliAppsQuery, setCliAppsQuery] = useState("");
-  const [cliAppsCategory, setCliAppsCategory] = useState("all");
-  const [cliAppsInstallFilter, setCliAppsInstallFilter] = useState<"all" | "installed" | "notInstalled">("all");
+  const [appsQuery, setAppsQuery] = useState("");
   const [cliAppsMessage, setCliAppsMessage] = useState<string | null>(null);
   const [cliAppsError, setCliAppsError] = useState<string | null>(null);
   const [cliAppsFocusName, setCliAppsFocusName] = useState<string | null>(null);
-  const [providerForms, setProviderForms] = useState<Record<string, { apiKey: string; apiBase: string }>>({});
+  const [appsKindFilter, setAppsKindFilter] = useState<AppsKindFilter>("all");
+  const [mcpMessage, setMcpMessage] = useState<string | null>(null);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [mcpFieldValues, setMcpFieldValues] = useState<Record<string, Record<string, string>>>({});
+  const [customMcpForm, setCustomMcpForm] = useState<CustomMcpForm>(DEFAULT_CUSTOM_MCP_FORM);
+  const [mcpConfigImport, setMcpConfigImport] = useState("");
+  const [providerForms, setProviderForms] = useState<Record<string, ProviderForm>>({});
   const [visibleProviderKeys, setVisibleProviderKeys] = useState<Record<string, boolean>>({});
   const [editingProviderKeys, setEditingProviderKeys] = useState<Record<string, boolean>>({});
   const [pendingRestartSections, setPendingRestartSections] = useState<PendingRestartSections>(
@@ -229,6 +338,10 @@ export function SettingsView({
     defaultImageSize: "1K",
     maxImagesPerTurn: 4,
   });
+
+  useEffect(() => {
+    setActiveSection(initialSection);
+  }, [initialSection]);
   const [webSearchKeyVisible, setWebSearchKeyVisible] = useState(false);
   const [webSearchKeyEditing, setWebSearchKeyEditing] = useState(false);
   const [form, setForm] = useState<AgentSettingsDraft>({
@@ -327,6 +440,27 @@ export function SettingsView({
   }, [token]);
 
   useEffect(() => {
+    let cancelled = false;
+    setMcpPresetsLoading(true);
+    fetchMcpPresets(token)
+      .then((payload) => {
+        if (!cancelled) {
+          setMcpPresets(payload);
+          setMcpError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setMcpError((err as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) setMcpPresetsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
     try {
       window.localStorage.setItem(LOCAL_PREFS_STORAGE_KEY, JSON.stringify(localPrefs));
     } catch {
@@ -342,6 +476,7 @@ export function SettingsView({
         next[provider.name] = {
           apiKey: next[provider.name]?.apiKey ?? "",
           apiBase: next[provider.name]?.apiBase ?? provider.api_base ?? provider.default_api_base ?? "",
+          apiType: next[provider.name]?.apiType ?? provider.api_type ?? "auto",
         };
       }
       return next;
@@ -382,6 +517,14 @@ export function SettingsView({
     );
   }, [imageGenerationForm, settings]);
 
+  const configuredModelProviderOptions = useMemo(
+    () =>
+      settings?.providers
+        .filter((provider) => provider.configured)
+        .map((provider) => ({ name: provider.name, label: provider.label })) ?? [],
+    [settings],
+  );
+
   const hasPendingRestart = useMemo(
     () =>
       !!settings?.requires_restart ||
@@ -409,6 +552,45 @@ export function SettingsView({
       setError((err as Error).message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const openModelConfigurationDialog = () => {
+    if (!settings) return;
+    const currentProvider = settings.agent.provider;
+    const provider =
+      configuredModelProviderOptions.find((option) => option.name === currentProvider)?.name ??
+      configuredModelProviderOptions[0]?.name ??
+      "";
+    setModelConfigurationForm({
+      label: "",
+      provider,
+      model: "",
+    });
+    setModelConfigurationOpen(true);
+  };
+
+  const handleCreateModelConfiguration = async () => {
+    if (modelConfigurationSaving) return;
+    const label = modelConfigurationForm.label.trim();
+    const provider = modelConfigurationForm.provider.trim();
+    const model = modelConfigurationForm.model.trim();
+    if (!label || !provider || !model) return;
+    setModelConfigurationSaving(true);
+    try {
+      const payload = await createModelConfiguration(token, {
+        label,
+        provider,
+        model,
+      });
+      applyPayload(payload);
+      onModelNameChange(payload.agent.model || null);
+      setModelConfigurationOpen(false);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setModelConfigurationSaving(false);
     }
   };
 
@@ -455,7 +637,7 @@ export function SettingsView({
     if (providerSaving) return;
     const provider = settings?.providers.find((item) => item.name === providerName);
     if (!provider) return;
-    const providerForm = providerForms[providerName] ?? { apiKey: "", apiBase: "" };
+    const providerForm = providerForms[providerName] ?? { apiKey: "", apiBase: "", apiType: "auto" };
     const apiKey = providerForm.apiKey.trim();
     const apiKeyRequired = provider.api_key_required ?? true;
     if (!provider.configured && apiKeyRequired && !apiKey) {
@@ -468,6 +650,7 @@ export function SettingsView({
         provider: providerName,
         apiKey: apiKey || undefined,
         apiBase: providerForm.apiBase.trim(),
+        apiType: providerForm.apiType,
       });
       applyPayload(payload);
       if (payload.requires_restart) {
@@ -478,6 +661,7 @@ export function SettingsView({
         [providerName]: {
           apiKey: "",
           apiBase: providerForm.apiBase.trim(),
+          apiType: providerForm.apiType,
         },
       }));
       setVisibleProviderKeys((prev) => ({ ...prev, [providerName]: false }));
@@ -554,6 +738,7 @@ export function SettingsView({
       [providerName]: {
         apiKey: "",
         apiBase: provider.api_base ?? provider.default_api_base ?? "",
+        apiType: provider.api_type ?? "auto",
       },
     }));
     setVisibleProviderKeys((prev) => ({ ...prev, [providerName]: false }));
@@ -607,6 +792,7 @@ export function SettingsView({
           [providerName]: {
             apiKey: "",
             apiBase: forms[providerName]?.apiBase ?? "",
+            apiType: forms[providerName]?.apiType ?? "auto",
           },
         }));
         setVisibleProviderKeys((visible) => ({ ...visible, [providerName]: false }));
@@ -626,12 +812,114 @@ export function SettingsView({
     try {
       const payload = await runCliAppAction(token, action, name);
       setCliApps(payload);
+      if (action !== "test") {
+        notifyCliAppsChanged(payload);
+      }
       setCliAppsMessage(payload.last_action?.message ?? null);
       setCliAppsFocusName(action === "uninstall" ? null : name);
     } catch (err) {
       setCliAppsError((err as Error).message);
     } finally {
       setCliAppsAction(null);
+    }
+  };
+
+  const handleMcpPresetAction = async (
+    action: "enable" | "remove" | "test",
+    name: string,
+    values: Record<string, string> = {},
+  ) => {
+    const key = `${action}:${name}`;
+    setMcpPresetAction(key);
+    setMcpMessage(null);
+    setMcpError(null);
+    try {
+      const payload = await runMcpPresetAction(token, action, name, values);
+      setMcpPresets(payload);
+      setMcpMessage(payload.last_action?.message ?? null);
+      if (action !== "test") {
+        notifyMcpPresetsChanged(payload);
+      }
+      if (payload.requires_restart) {
+        setPendingRestartSections((prev) => ({ ...prev, runtime: true }));
+      }
+      if (action === "enable") {
+        setMcpFieldValues((prev) => ({ ...prev, [name]: {} }));
+      }
+    } catch (err) {
+      setMcpError((err as Error).message);
+    } finally {
+      setMcpPresetAction(null);
+    }
+  };
+
+  const handleSaveCustomMcp = async () => {
+    const name = customMcpForm.name.trim();
+    const key = `custom:${name || "new"}`;
+    setMcpPresetAction(key);
+    setMcpMessage(null);
+    setMcpError(null);
+    try {
+      const payload = await saveCustomMcpServer(token, {
+        name,
+        transport: customMcpForm.transport,
+        command: customMcpForm.command,
+        args: customMcpForm.args,
+        url: customMcpForm.url,
+        env: customMcpForm.env,
+        headers: customMcpForm.headers,
+        tool_timeout: customMcpForm.toolTimeout,
+      });
+      setMcpPresets(payload);
+      setMcpMessage(payload.last_action?.message ?? null);
+      notifyMcpPresetsChanged(payload);
+      if (payload.requires_restart) {
+        setPendingRestartSections((prev) => ({ ...prev, runtime: true }));
+      }
+      setCustomMcpForm((prev) => ({ ...DEFAULT_CUSTOM_MCP_FORM, transport: prev.transport }));
+    } catch (err) {
+      setMcpError((err as Error).message);
+    } finally {
+      setMcpPresetAction(null);
+    }
+  };
+
+  const handleImportMcpConfig = async () => {
+    setMcpPresetAction("import");
+    setMcpMessage(null);
+    setMcpError(null);
+    try {
+      const payload = await importMcpConfig(token, mcpConfigImport);
+      setMcpPresets(payload);
+      setMcpMessage(payload.last_action?.message ?? null);
+      notifyMcpPresetsChanged(payload);
+      if (payload.requires_restart) {
+        setPendingRestartSections((prev) => ({ ...prev, runtime: true }));
+      }
+      setMcpConfigImport("");
+    } catch (err) {
+      setMcpError((err as Error).message);
+    } finally {
+      setMcpPresetAction(null);
+    }
+  };
+
+  const handleMcpToolsChange = async (name: string, enabledTools: string[]) => {
+    setMcpPresetAction(`tools:${name}`);
+    setMcpMessage(null);
+    setMcpError(null);
+    try {
+      const payload = await updateMcpServerTools(token, name, enabledTools);
+      setMcpPresets(payload);
+      setMcpMessage(payload.last_action?.message ?? null);
+      notifyMcpPresetsChanged(payload);
+      if (payload.requires_restart) {
+        setPendingRestartSections((prev) => ({ ...prev, runtime: true }));
+      }
+    } catch (err) {
+      setMcpError((err as Error).message);
+    } finally {
+      setMcpPresetAction(null);
     }
   };
 
@@ -645,6 +933,9 @@ export function SettingsView({
             requiresRestart={hasPendingRestart}
             onRestart={onRestart}
             isRestarting={isRestarting}
+            showBrandLogos={localPrefs.brandLogos}
+            cliApps={cliApps}
+            mcpPresets={mcpPresets}
             onSelectSection={setActiveSection}
           />
         );
@@ -659,47 +950,48 @@ export function SettingsView({
         );
       case "models":
         return (
-          <ModelsSettings
-            form={form}
-            setForm={setForm}
-            settings={settings}
-            dirty={modelDirty}
-            saving={saving}
-            onSave={saveModelSettings}
-            onOpenProviders={() => setActiveSection("providers")}
-          />
-        );
-      case "providers":
-        return (
-          <ProvidersSettings
-            settings={settings}
-            expandedProvider={expandedProvider}
-            providerForms={providerForms}
-            visibleProviderKeys={visibleProviderKeys}
-            editingProviderKeys={editingProviderKeys}
-            providerSaving={providerSaving}
-            query={providerQuery}
-            showBrandLogos={localPrefs.brandLogos}
-            onQueryChange={setProviderQuery}
-            onToggleProvider={handleToggleProvider}
-            onToggleProviderKey={toggleProviderKeyVisibility}
-            onToggleProviderKeyEditing={toggleProviderKeyEditing}
-            onChangeProviderForm={(provider, value) =>
-              setProviderForms((prev) => ({
-                ...prev,
-                [provider]: {
-                  apiKey: prev[provider]?.apiKey ?? "",
-                  apiBase: prev[provider]?.apiBase ?? "",
-                  ...value,
-                },
-              }))
-            }
-            onSaveProvider={saveProvider}
-            onResetProviderDraft={resetProviderDraft}
-            imageProviderRestartPending={pendingRestartSections.image}
-            onRestart={onRestart}
-            isRestarting={isRestarting}
-          />
+          <div className="space-y-8">
+            <ModelsSettings
+              form={form}
+              setForm={setForm}
+              settings={settings}
+              dirty={modelDirty}
+              saving={saving}
+              showBrandLogos={localPrefs.brandLogos}
+              onSave={saveModelSettings}
+              onCreateConfiguration={openModelConfigurationDialog}
+            />
+            <ProvidersSettings
+              settings={settings}
+              expandedProvider={expandedProvider}
+              providerForms={providerForms}
+              visibleProviderKeys={visibleProviderKeys}
+              editingProviderKeys={editingProviderKeys}
+              providerSaving={providerSaving}
+              query={providerQuery}
+              showBrandLogos={localPrefs.brandLogos}
+              onQueryChange={setProviderQuery}
+              onToggleProvider={handleToggleProvider}
+              onToggleProviderKey={toggleProviderKeyVisibility}
+              onToggleProviderKeyEditing={toggleProviderKeyEditing}
+              onChangeProviderForm={(provider, value) =>
+                setProviderForms((prev) => ({
+                  ...prev,
+                  [provider]: {
+                    apiKey: prev[provider]?.apiKey ?? "",
+                    apiBase: prev[provider]?.apiBase ?? "",
+                    apiType: prev[provider]?.apiType ?? "auto",
+                    ...value,
+                  },
+                }))
+              }
+              onSaveProvider={saveProvider}
+              onResetProviderDraft={resetProviderDraft}
+              imageProviderRestartPending={pendingRestartSections.image}
+              onRestart={onRestart}
+              isRestarting={isRestarting}
+            />
+          </div>
         );
       case "image":
         return (
@@ -710,7 +1002,8 @@ export function SettingsView({
             saving={imageGenerationSaving}
             onChangeForm={setImageGenerationForm}
             onSave={saveImageGenerationSettings}
-            onOpenProviders={() => setActiveSection("providers")}
+            onOpenProviders={() => setActiveSection("models")}
+            showBrandLogos={localPrefs.brandLogos}
             onRestart={onRestart}
             isRestarting={isRestarting}
             requiresRestartPending={pendingRestartSections.image}
@@ -734,29 +1027,60 @@ export function SettingsView({
             }}
             onReset={resetWebSearchDraft}
             onSave={saveWebSearch}
+            showBrandLogos={localPrefs.brandLogos}
             onRestart={onRestart}
             isRestarting={isRestarting}
             requiresRestartPending={pendingRestartSections.web}
           />
         );
-      case "cliApps":
+      case "apps":
         return (
-          <CliAppsSettings
-            payload={cliApps}
-            loading={cliAppsLoading}
-            query={cliAppsQuery}
-            category={cliAppsCategory}
-            installFilter={cliAppsInstallFilter}
-            actionKey={cliAppsAction}
-            message={cliAppsMessage}
-            error={cliAppsError}
-            focusName={cliAppsFocusName}
+          <AppsCatalogSettings
+            cliApps={cliApps}
+            mcpPresets={mcpPresets}
+            cliAppsLoading={cliAppsLoading}
+            mcpPresetsLoading={mcpPresetsLoading}
+            query={appsQuery}
+            filter={appsKindFilter}
+            cliActionKey={cliAppsAction}
+            mcpActionKey={mcpPresetAction}
+            cliMessage={cliAppsMessage}
+            cliError={cliAppsError}
+            cliFocusName={cliAppsFocusName}
+            mcpMessage={mcpMessage}
+            mcpError={mcpError}
+            mcpFieldValues={mcpFieldValues}
+            customMcpForm={customMcpForm}
+            mcpConfigImport={mcpConfigImport}
             showBrandLogos={localPrefs.brandLogos}
-            onQueryChange={setCliAppsQuery}
-            onCategoryChange={setCliAppsCategory}
-            onInstallFilterChange={setCliAppsInstallFilter}
-            onAction={handleCliAppAction}
+            requiresRestartPending={pendingRestartSections.runtime}
+            onQueryChange={setAppsQuery}
+            onFilterChange={setAppsKindFilter}
+            onCliAction={handleCliAppAction}
+            onMcpAction={handleMcpPresetAction}
+            onDismissStatus={() => {
+              setCliAppsMessage(null);
+              setCliAppsError(null);
+              setMcpMessage(null);
+              setMcpError(null);
+            }}
             onBackToChat={onBackToChat}
+            onMcpFieldChange={(presetName, fieldName, value) => {
+              setMcpFieldValues((prev) => ({
+                ...prev,
+                [presetName]: {
+                  ...(prev[presetName] ?? {}),
+                  [fieldName]: value,
+                },
+              }));
+            }}
+            onCustomMcpFormChange={setCustomMcpForm}
+            onMcpConfigImportChange={setMcpConfigImport}
+            onSaveCustomMcp={handleSaveCustomMcp}
+            onImportMcpConfig={handleImportMcpConfig}
+            onMcpToolsChange={handleMcpToolsChange}
+            onRestart={onRestart}
+            isRestarting={isRestarting}
           />
         );
       case "runtime":
@@ -782,11 +1106,24 @@ export function SettingsView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_50%_0%,hsl(var(--muted))_0%,hsl(var(--background))_42%)] md:flex-row">
-      <SettingsSidebar
-        activeSection={activeSection}
-        onSelectSection={setActiveSection}
-        onBackToChat={onBackToChat}
-        onLogout={onLogout}
+      {showSidebar ? (
+        <SettingsSidebar
+          activeSection={activeSection}
+          onSelectSection={setActiveSection}
+          onBackToChat={onBackToChat}
+          onLogout={onLogout}
+        />
+      ) : null}
+
+      <NewModelConfigurationDialog
+        open={modelConfigurationOpen}
+        draft={modelConfigurationForm}
+        providers={configuredModelProviderOptions}
+        saving={modelConfigurationSaving}
+        showProviderLogos={localPrefs.brandLogos}
+        onOpenChange={setModelConfigurationOpen}
+        onChangeDraft={setModelConfigurationForm}
+        onSave={handleCreateModelConfiguration}
       />
 
       <main className="min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
@@ -831,10 +1168,9 @@ const SETTINGS_NAV_ITEMS: Array<{ key: SettingsSectionKey; icon: LucideIcon; fal
   { key: "overview", icon: Activity, fallback: "Overview" },
   { key: "appearance", icon: Palette, fallback: "Appearance" },
   { key: "models", icon: SlidersHorizontal, fallback: "Models" },
-  { key: "providers", icon: KeyRound, fallback: "Providers" },
   { key: "image", icon: ImageIcon, fallback: "Image" },
   { key: "web", icon: Globe2, fallback: "Web" },
-  { key: "cliApps", icon: Package, fallback: "CLI Apps" },
+  { key: "apps", icon: Blocks, fallback: "Apps" },
   { key: "runtime", icon: Server, fallback: "Runtime" },
   { key: "advanced", icon: ShieldCheck, fallback: "Advanced" },
 ];
@@ -920,16 +1256,21 @@ function OverviewSettings({
   onRestart,
   isRestarting,
   onSelectSection,
+  showBrandLogos,
+  cliApps,
+  mcpPresets,
 }: {
   settings: SettingsPayload;
   requiresRestart: boolean;
   onRestart?: () => void;
   isRestarting?: boolean;
   onSelectSection: (section: SettingsSectionKey) => void;
+  showBrandLogos: boolean;
+  cliApps: CliAppsPayload | null;
+  mcpPresets: McpPresetsPayload | null;
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  const configuredCount = settings.providers.filter((provider) => provider.configured).length;
   const activePreset = settings.agent.model_preset || "default";
   const activeProvider = settings.agent.resolved_provider ?? settings.agent.provider;
   const webStatus = settings.web.enable
@@ -938,20 +1279,26 @@ function OverviewSettings({
   const imageStatus = settings.image_generation.enabled
     ? tx("settings.values.enabled", "Enabled")
     : tx("settings.values.disabled", "Disabled");
-  const imageCaption = `${providerLabel(settings.image_generation.providers, settings.image_generation.provider)} · ${
+  const imageCaption = `${providerDisplayLabel(settings.image_generation.providers, settings.image_generation.provider)} · ${
     settings.image_generation.provider_configured
       ? tx("settings.values.configured", "Configured")
       : tx("settings.values.notConfigured", "Not configured")
   }`;
+  const cliAppsEnabledCount = cliApps?.installed_count ?? 0;
+  const mcpAppsEnabledCount = mcpPresets?.installed_count ?? settings.advanced.mcp_server_count;
+  const appsCount = cliAppsEnabledCount + mcpAppsEnabledCount;
+  const appsValue = tx("settings.apps.enabledSummary", "{{count}} enabled")
+    .replace("{{count}}", String(appsCount));
+  const appsCaption = tx("settings.apps.caption", "{{cli}} CLI · {{mcp}} MCP")
+    .replace("{{cli}}", String(cliAppsEnabledCount))
+    .replace("{{mcp}}", String(mcpAppsEnabledCount));
   return (
     <div className="space-y-7">
       <section>
         <div className="overflow-hidden rounded-[22px] border border-border/45 bg-card/86 shadow-[0_18px_65px_rgba(15,23,42,0.075)] backdrop-blur-xl dark:border-white/10 dark:shadow-[0_18px_65px_rgba(0,0,0,0.24)]">
           <div className="flex flex-col gap-4 px-5 py-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-3">
-              <span className="grid h-12 w-12 shrink-0 place-items-center rounded-[16px] bg-muted text-foreground/82 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.025)] dark:bg-muted/70">
-                <Bot className="h-6 w-6" aria-hidden />
-              </span>
+              <NanobotBrandLogo size="lg" testId="overview-nanobot-logo" />
               <div className="min-w-0">
                 <div className="text-[12px] font-medium text-muted-foreground">nanobot</div>
                 <div className="mt-0.5 truncate text-[18px] font-semibold leading-6 text-foreground">
@@ -994,23 +1341,12 @@ function OverviewSettings({
         <SettingsGroup>
           <OverviewListRow
             icon={Bot}
+            valueLogoProvider={activeProvider}
             title={tx("settings.overview.model", "Current model")}
             value={settings.agent.model}
             caption={`${activeProvider} · ${activePreset}`}
+            showBrandLogos={showBrandLogos}
             onClick={() => onSelectSection("models")}
-          />
-          <OverviewListRow
-            icon={KeyRound}
-            title={tx("settings.overview.providers", "Providers")}
-            value={tx("settings.overview.configuredCount", "{{count}} configured").replace(
-              "{{count}}",
-              String(configuredCount),
-            )}
-            caption={tx("settings.overview.totalProviders", "{{count}} available").replace(
-              "{{count}}",
-              String(settings.providers.length),
-            )}
-            onClick={() => onSelectSection("providers")}
           />
         </SettingsGroup>
       </section>
@@ -1020,17 +1356,28 @@ function OverviewSettings({
         <SettingsGroup>
           <OverviewListRow
             icon={Globe2}
+            valueLogoProvider={settings.web_search.provider}
             title={tx("settings.overview.webSearch", "Web search")}
-            value={providerLabel(settings.web_search.providers, settings.web_search.provider)}
+            value={providerDisplayLabel(settings.web_search.providers, settings.web_search.provider)}
             caption={webStatus}
+            showBrandLogos={showBrandLogos}
             onClick={() => onSelectSection("web")}
           />
           <OverviewListRow
             icon={ImageIcon}
+            valueLogoProvider={settings.image_generation.provider}
             title={tx("settings.overview.imageGeneration", "Image generation")}
             value={imageStatus}
             caption={imageCaption}
+            showBrandLogos={showBrandLogos}
             onClick={() => onSelectSection("image")}
+          />
+          <OverviewListRow
+            icon={Blocks}
+            title={tx("settings.nav.apps", "Apps")}
+            value={appsValue}
+            caption={appsCaption}
+            onClick={() => onSelectSection("apps")}
           />
         </SettingsGroup>
       </section>
@@ -1157,6 +1504,7 @@ function AppearanceSettings({
             <ToggleButton
               checked={localPrefs.codeWrap}
               onChange={(codeWrap) => onChangeLocalPrefs((prev) => ({ ...prev, codeWrap }))}
+              ariaLabel={tx("settings.rows.codeWrap", "Code wrapping")}
               label={localPrefs.codeWrap ? tx("settings.values.on", "On") : tx("settings.values.off", "Off")}
             />
           </SettingsRow>
@@ -1167,6 +1515,7 @@ function AppearanceSettings({
             <ToggleButton
               checked={localPrefs.brandLogos}
               onChange={(brandLogos) => onChangeLocalPrefs((prev) => ({ ...prev, brandLogos }))}
+              ariaLabel={tx("settings.rows.brandLogos", "Brand logos")}
               label={localPrefs.brandLogos ? tx("settings.values.on", "On") : tx("settings.values.off", "Off")}
             />
           </SettingsRow>
@@ -1176,22 +1525,140 @@ function AppearanceSettings({
   );
 }
 
+function NewModelConfigurationDialog({
+  open,
+  draft,
+  providers,
+  saving,
+  showProviderLogos,
+  onOpenChange,
+  onChangeDraft,
+  onSave,
+}: {
+  open: boolean;
+  draft: ModelConfigurationDraft;
+  providers: Array<{ name: string; label: string }>;
+  saving: boolean;
+  showProviderLogos: boolean;
+  onOpenChange: (open: boolean) => void;
+  onChangeDraft: Dispatch<SetStateAction<ModelConfigurationDraft>>;
+  onSave: () => void;
+}) {
+  const { t } = useTranslation();
+  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
+  const canSave = Boolean(draft.label.trim() && draft.provider.trim() && draft.model.trim());
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[520px] rounded-[28px] border-border/55 bg-card/95 p-0 shadow-[0_28px_90px_rgba(15,23,42,0.20)] backdrop-blur-xl dark:border-white/10">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSave();
+          }}
+        >
+          <DialogHeader className="border-b border-border/45 px-5 py-4 text-left">
+            <DialogTitle className="text-[18px] font-semibold tracking-[-0.01em]">
+              {tx("settings.models.newConfiguration", "New model configuration")}
+            </DialogTitle>
+            <DialogDescription className="text-[12.5px] leading-5">
+              {tx("settings.models.newConfigurationHelp", "Save a provider and model as a one-click option.")}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 px-5 py-5">
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-medium text-muted-foreground">
+                {tx("settings.models.configurationName", "Name")}
+              </span>
+              <Input
+                autoFocus
+                value={draft.label}
+                placeholder={tx("settings.models.configurationNamePlaceholder", "Fast writing")}
+                onChange={(event) =>
+                  onChangeDraft((prev) => ({ ...prev, label: event.target.value }))
+                }
+                className="h-10 rounded-full px-4 text-[14px]"
+              />
+            </label>
+
+            <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-medium text-muted-foreground">
+                  {tx("settings.rows.model", "Model")}
+                </span>
+                <Input
+                  value={draft.model}
+                  placeholder="openai/gpt-4.1"
+                  onChange={(event) =>
+                    onChangeDraft((prev) => ({ ...prev, model: event.target.value }))
+                  }
+                  className="h-10 rounded-full px-4 text-[14px]"
+                />
+              </label>
+              <div className="block">
+                <span className="mb-1.5 block text-[12px] font-medium text-muted-foreground">
+                  {tx("settings.rows.provider", "Provider")}
+                </span>
+                <ProviderPicker
+                  providers={providers}
+                  value={draft.provider}
+                  emptyLabel={tx("settings.byok.noConfiguredProviders", "No configured providers")}
+                  showProviderLogos={showProviderLogos}
+                  onChange={(provider) =>
+                    onChangeDraft((prev) => ({ ...prev, provider }))
+                  }
+                />
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter className="border-t border-border/45 px-5 py-4 sm:space-x-2">
+            <Button
+              type="button"
+              variant="ghost"
+              className="rounded-full"
+              disabled={saving}
+              onClick={() => onOpenChange(false)}
+            >
+              {tx("settings.actions.cancel", "Cancel")}
+            </Button>
+            <Button
+              type="submit"
+              variant="outline"
+              className="rounded-full"
+              disabled={!canSave || saving || providers.length === 0}
+            >
+              {saving ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
+              ) : null}
+              {saving ? tx("settings.actions.saving", "Saving...") : tx("settings.actions.save", "Save")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ModelsSettings({
   form,
   setForm,
   settings,
   dirty,
   saving,
+  showBrandLogos,
   onSave,
-  onOpenProviders,
+  onCreateConfiguration,
 }: {
   form: AgentSettingsDraft;
   setForm: Dispatch<SetStateAction<AgentSettingsDraft>>;
   settings: SettingsPayload;
   dirty: boolean;
   saving: boolean;
+  showBrandLogos: boolean;
   onSave: () => void;
-  onOpenProviders: () => void;
+  onCreateConfiguration: () => void;
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
@@ -1203,45 +1670,24 @@ function ModelsSettings({
   const providerValue = providerOptions.some((provider) => provider.name === form.provider)
     ? form.provider
     : "";
-  const selectedPreset = settings.model_presets.find((preset) => preset.name === form.modelPreset);
   return (
     <div className="space-y-7">
       <section>
-        <SettingsSectionTitle>{tx("settings.sections.presets", "Presets")}</SettingsSectionTitle>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {settings.model_presets.map((preset) => (
-            <button
-              key={preset.name}
-              type="button"
-              onClick={() => setForm((prev) => ({ ...prev, modelPreset: preset.name }))}
-              className={cn(
-                "rounded-[22px] border px-4 py-4 text-left transition-colors",
-                form.modelPreset === preset.name
-                  ? "border-primary/35 bg-primary/5 text-foreground"
-                  : "border-border/45 bg-card/82 hover:bg-muted/30",
-              )}
-            >
-              <span className="flex items-center justify-between gap-2">
-                <span className="truncate text-[15px] font-semibold">{preset.label}</span>
-                {form.modelPreset === preset.name ? <Check className="h-4 w-4" aria-hidden /> : null}
-              </span>
-              <span className="mt-2 block truncate text-[12px] text-muted-foreground">{preset.model}</span>
-              <span className="mt-1 block text-[12px] text-muted-foreground">
-                {preset.provider} · {preset.max_tokens} tokens
-              </span>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section>
-        <SettingsSectionTitle>{t("settings.sections.ai")}</SettingsSectionTitle>
         <SettingsGroup>
           <SettingsRow
-            title={tx("settings.rows.selectedPreset", "Selected preset")}
-            description={tx("settings.help.selectedPreset", "Named presets are read-only here; edit them in config.json.")}
+            title={tx("settings.rows.currentModel", "Current model")}
+            description={tx("settings.help.currentModel", "Choose the model nanobot uses for new replies.")}
           >
-            <StatusPill>{selectedPreset?.label ?? form.modelPreset}</StatusPill>
+            <ModelPresetPicker
+              presets={settings.model_presets}
+              value={form.modelPreset}
+              settings={settings}
+              draftModel={form.model}
+              draftProvider={form.provider}
+              showProviderLogos={showBrandLogos}
+              onChange={(modelPreset) => setForm((prev) => ({ ...prev, modelPreset }))}
+              onCreateConfiguration={onCreateConfiguration}
+            />
           </SettingsRow>
           {form.modelPreset === "default" ? (
             <>
@@ -1253,6 +1699,7 @@ function ModelsSettings({
                   providers={providerOptions}
                   value={providerValue}
                   emptyLabel={t("settings.byok.noConfiguredProviders")}
+                  showProviderLogos={showBrandLogos}
                   onChange={(provider) => setForm((prev) => ({ ...prev, provider }))}
                 />
               </SettingsRow>
@@ -1267,29 +1714,13 @@ function ModelsSettings({
                 />
               </SettingsRow>
             </>
-          ) : (
-            <SettingsRow
-              title={tx("settings.rows.presetModel", "Preset model")}
-              description={tx("settings.help.presetModel", "Switch to Default to edit model and provider from the WebUI.")}
-            >
-              <span className="max-w-[280px] truncate text-right text-[13px] text-muted-foreground">
-                {selectedPreset?.model ?? settings.agent.model}
-              </span>
-            </SettingsRow>
-          )}
+          ) : null}
           <SettingsFooter
             dirty={dirty}
             saving={saving}
             saved={false}
             onSave={onSave}
           />
-          {configuredProviders.length === 0 ? (
-            <SettingsRow title={t("settings.byok.configureFirst")}>
-              <Button size="sm" variant="outline" onClick={onOpenProviders} className="rounded-full">
-                {t("settings.byok.openByok")}
-              </Button>
-            </SettingsRow>
-          ) : null}
         </SettingsGroup>
       </section>
     </div>
@@ -1318,7 +1749,7 @@ function ProvidersSettings({
 }: {
   settings: SettingsPayload;
   expandedProvider: string | null;
-  providerForms: Record<string, { apiKey: string; apiBase: string }>;
+  providerForms: Record<string, ProviderForm>;
   visibleProviderKeys: Record<string, boolean>;
   editingProviderKeys: Record<string, boolean>;
   providerSaving: string | null;
@@ -1328,7 +1759,7 @@ function ProvidersSettings({
   onToggleProvider: (provider: string) => void;
   onToggleProviderKey: (provider: string) => void;
   onToggleProviderKeyEditing: (provider: string) => void;
-  onChangeProviderForm: (provider: string, value: Partial<{ apiKey: string; apiBase: string }>) => void;
+  onChangeProviderForm: (provider: string, value: Partial<ProviderForm>) => void;
   onSaveProvider: (provider: string) => void;
   onResetProviderDraft: (provider: string) => void;
   imageProviderRestartPending: boolean;
@@ -1349,6 +1780,7 @@ function ProvidersSettings({
     const form = providerForms[provider.name] ?? {
       apiKey: "",
       apiBase: provider.api_base ?? provider.default_api_base ?? "",
+      apiType: provider.api_type ?? "auto",
     };
     const saving = providerSaving === provider.name;
     const keyVisible = !!visibleProviderKeys[provider.name];
@@ -1460,6 +1892,38 @@ function ProvidersSettings({
                 className="h-9 rounded-full text-[13px]"
               />
             </label>
+            {provider.name === "openai" ? (
+              <label className="block space-y-1.5">
+                <span className="text-[12px] font-medium text-muted-foreground">
+                  {tx("settings.byok.apiType", "API type")}
+                </span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-9 w-full justify-between rounded-full px-3 text-[13px]"
+                    >
+                      <span>
+                        {OPENAI_API_TYPE_OPTIONS.find((option) => option.value === form.apiType)?.label ??
+                          form.apiType}
+                      </span>
+                      <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="min-w-[220px]">
+                    {OPENAI_API_TYPE_OPTIONS.map((option) => (
+                      <DropdownMenuItem
+                        key={option.value}
+                        onSelect={() => onChangeProviderForm(provider.name, { apiType: option.value })}
+                      >
+                        {option.label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </label>
+            ) : null}
             <div className="flex items-center justify-end gap-2">
               <Button
                 size="sm"
@@ -1476,7 +1940,7 @@ function ProvidersSettings({
                 disabled={saving || missingRequiredApiKey || missingOptionalCredential}
                 className="rounded-full"
               >
-                {saving ? t("settings.actions.saving") : t("settings.actions.save")}
+                {saving ? t("settings.actions.saving") : tx("settings.providers.saveProvider", "Save provider")}
               </Button>
             </div>
           </div>
@@ -1548,6 +2012,7 @@ function ImageGenerationSettings({
   onChangeForm,
   onSave,
   onOpenProviders,
+  showBrandLogos,
   onRestart,
   isRestarting,
   requiresRestartPending,
@@ -1559,6 +2024,7 @@ function ImageGenerationSettings({
   onChangeForm: Dispatch<SetStateAction<ImageGenerationSettingsUpdate>>;
   onSave: () => void;
   onOpenProviders: () => void;
+  showBrandLogos: boolean;
   onRestart?: () => void;
   isRestarting?: boolean;
   requiresRestartPending: boolean;
@@ -1591,6 +2057,7 @@ function ImageGenerationSettings({
             <ToggleButton
               checked={form.enabled}
               onChange={(enabled) => onChangeForm((prev) => ({ ...prev, enabled }))}
+              ariaLabel={tx("settings.rows.imageGeneration", "Image generation")}
               label={form.enabled ? tx("settings.values.on", "On") : tx("settings.values.off", "Off")}
             />
           </SettingsRow>
@@ -1602,6 +2069,7 @@ function ImageGenerationSettings({
               providers={settings.image_generation.providers}
               value={form.provider}
               emptyLabel={tx("settings.image.selectProvider", "Select provider")}
+              showProviderLogos={showBrandLogos}
               onChange={(provider) => onChangeForm((prev) => ({ ...prev, provider }))}
             />
           </SettingsRow>
@@ -1717,6 +2185,7 @@ function WebSettings({
   onToggleKeyEditing,
   onReset,
   onSave,
+  showBrandLogos,
   onRestart,
   isRestarting,
   requiresRestartPending,
@@ -1732,6 +2201,7 @@ function WebSettings({
   onToggleKeyEditing: () => void;
   onReset: () => void;
   onSave: () => void;
+  showBrandLogos: boolean;
   onRestart?: () => void;
   isRestarting?: boolean;
   requiresRestartPending: boolean;
@@ -1777,6 +2247,7 @@ function WebSettings({
               providers={settings.web_search.providers}
               value={form.provider}
               emptyLabel={t("settings.byok.webSearch.selectProvider")}
+              showProviderLogos={showBrandLogos}
               onChange={onChangeProvider}
             />
           </SettingsRow>
@@ -1900,6 +2371,7 @@ function WebSettings({
             <ToggleButton
               checked={effectiveJinaReader}
               onChange={(useJinaReader) => onChangeForm((prev) => ({ ...prev, useJinaReader }))}
+              ariaLabel={tx("settings.rows.jinaReader", "Jina reader")}
               label={effectiveJinaReader ? tx("settings.values.on", "On") : tx("settings.values.off", "Off")}
             />
           </SettingsRow>
@@ -1930,169 +2402,974 @@ function WebSettings({
   );
 }
 
-function CliAppsSettings({
-  payload,
-  loading,
+function AppsCatalogSettings({
+  cliApps,
+  mcpPresets,
+  cliAppsLoading,
+  mcpPresetsLoading,
   query,
-  category,
-  installFilter,
-  actionKey,
-  message,
-  error,
-  focusName,
+  filter,
+  cliActionKey,
+  mcpActionKey,
+  cliMessage,
+  cliError,
+  cliFocusName,
+  mcpMessage,
+  mcpError,
+  mcpFieldValues,
+  customMcpForm,
+  mcpConfigImport,
   showBrandLogos,
+  requiresRestartPending,
   onQueryChange,
-  onCategoryChange,
-  onInstallFilterChange,
-  onAction,
+  onFilterChange,
+  onCliAction,
+  onMcpAction,
+  onDismissStatus,
   onBackToChat,
+  onMcpFieldChange,
+  onCustomMcpFormChange,
+  onMcpConfigImportChange,
+  onSaveCustomMcp,
+  onImportMcpConfig,
+  onMcpToolsChange,
+  onRestart,
+  isRestarting,
 }: {
-  payload: CliAppsPayload | null;
-  loading: boolean;
+  cliApps: CliAppsPayload | null;
+  mcpPresets: McpPresetsPayload | null;
+  cliAppsLoading: boolean;
+  mcpPresetsLoading: boolean;
   query: string;
-  category: string;
-  installFilter: "all" | "installed" | "notInstalled";
-  actionKey: string | null;
-  message: string | null;
-  error: string | null;
-  focusName: string | null;
+  filter: AppsKindFilter;
+  cliActionKey: string | null;
+  mcpActionKey: string | null;
+  cliMessage: string | null;
+  cliError: string | null;
+  cliFocusName: string | null;
+  mcpMessage: string | null;
+  mcpError: string | null;
+  mcpFieldValues: Record<string, Record<string, string>>;
+  customMcpForm: CustomMcpForm;
+  mcpConfigImport: string;
   showBrandLogos: boolean;
+  requiresRestartPending: boolean;
   onQueryChange: (value: string) => void;
-  onCategoryChange: (value: string) => void;
-  onInstallFilterChange: (value: "all" | "installed" | "notInstalled") => void;
-  onAction: (action: "install" | "update" | "uninstall" | "test", name: string) => void;
+  onFilterChange: (value: AppsKindFilter) => void;
+  onCliAction: (action: "install" | "update" | "uninstall" | "test", name: string) => void;
+  onMcpAction: (action: "enable" | "remove" | "test", name: string, values?: Record<string, string>) => void;
+  onDismissStatus: () => void;
   onBackToChat: () => void;
+  onMcpFieldChange: (presetName: string, fieldName: string, value: string) => void;
+  onCustomMcpFormChange: Dispatch<SetStateAction<CustomMcpForm>>;
+  onMcpConfigImportChange: (value: string) => void;
+  onSaveCustomMcp: () => void;
+  onImportMcpConfig: () => void;
+  onMcpToolsChange: (name: string, enabledTools: string[]) => void;
+  onRestart?: () => void;
+  isRestarting?: boolean;
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  const apps = payload?.apps ?? [];
-  const categories = useMemo(
-    () => ["all", ...Array.from(new Set(apps.map((app) => app.category))).sort()],
-    [apps],
-  );
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredApps = apps.filter((app) => {
-    const categoryMatch = category === "all" || app.category === category;
-    if (!categoryMatch) return false;
-    if (installFilter === "installed" && !app.installed) return false;
-    if (installFilter === "notInstalled" && app.installed) return false;
-    if (!normalizedQuery) return true;
-    return (
-      app.display_name.toLowerCase().includes(normalizedQuery) ||
-      app.name.toLowerCase().includes(normalizedQuery) ||
-      app.description.toLowerCase().includes(normalizedQuery) ||
-      app.category.toLowerCase().includes(normalizedQuery)
-    );
-  });
-  const categoryLabel =
-    category === "all"
-      ? tx("settings.cliApps.allCategories", "All categories")
-      : category;
-  const installFilterOptions = [
-    { value: "all", label: tx("settings.cliApps.filterAll", "All") },
-    { value: "installed", label: tx("settings.cliApps.filterInstalled", "Installed CLIs") },
-    { value: "notInstalled", label: tx("settings.cliApps.filterNotInstalled", "Not installed") },
+  const filterOptions = [
+    { value: "all", label: tx("settings.apps.filterAll", "All") },
+    { value: "cli", label: tx("settings.apps.filterCli", "App CLIs") },
+    { value: "mcp", label: tx("settings.apps.filterMcp", "MCP services") },
   ];
-  const focusedApp = focusName
-    ? apps.find((app) => app.name === focusName && app.installed)
+  const normalizedQuery = query.trim().toLowerCase();
+  const items: AppsCatalogItem[] = [
+    ...(cliApps?.apps ?? []).map((app) => ({ id: `cli:${app.name}`, kind: "cli" as const, app })),
+    ...(mcpPresets?.presets ?? []).map((preset) => ({
+      id: `mcp:${preset.name}`,
+      kind: "mcp" as const,
+      preset,
+    })),
+  ]
+    .filter((item) => filter === "all" || item.kind === filter)
+    .filter((item) => !normalizedQuery || appsSearchText(item).includes(normalizedQuery))
+    .sort((left, right) => {
+      const rank = Number(!appsReady(left)) - Number(!appsReady(right));
+      return rank || appsTitle(left).localeCompare(appsTitle(right));
+    });
+  const focusedApp = cliFocusName
+    ? (cliApps?.apps ?? []).find((app) => app.name === cliFocusName && app.installed)
     : null;
-  const visibleStatusMessage = error || (!focusedApp ? message : null);
+  const loading = (cliAppsLoading || mcpPresetsLoading) && !cliApps && !mcpPresets;
+  const statusMessage = cliError || mcpError || (!focusedApp ? cliMessage || mcpMessage : null);
+  const statusIsError = Boolean(cliError || mcpError);
+  const caption = tx("settings.apps.caption", "{{cli}} CLI · {{mcp}} MCP")
+    .replace("{{cli}}", String(cliApps?.installed_count ?? 0))
+    .replace("{{mcp}}", String(mcpPresets?.installed_count ?? 0));
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-7">
       <section className="space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <SettingsSectionTitle>{tx("settings.sections.cliApps", "CLI Apps")}</SettingsSectionTitle>
-            <p className="mt-1 text-[13px] text-muted-foreground">
-              {tx("settings.cliApps.summary", "{{installed}} of {{total}} CLIs installed")
-                .replace("{{installed}}", String(payload?.installed_count ?? 0))
-                .replace("{{total}}", String(apps.length))}
-            </p>
-          </div>
-          <SegmentedControl
-            value={installFilter}
-            options={installFilterOptions}
-            onChange={(value) => onInstallFilterChange(value as "all" | "installed" | "notInstalled")}
-          />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <p className="max-w-[680px] text-[13px] leading-5 text-muted-foreground">
+            {tx(
+              "settings.apps.description",
+              "Add local app adapters and connected tool servers that nanobot can use from chat.",
+            )}
+          </p>
+          <span className="text-[12px] font-medium text-muted-foreground">{caption}</span>
         </div>
-
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
           <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
             <Input
               value={query}
               onChange={(event) => onQueryChange(event.target.value)}
-              placeholder={tx("settings.cliApps.searchPlaceholder", "Search CLIs")}
-              className="h-10 w-full rounded-full border-border/65 bg-card/80 pl-9 text-[13px] shadow-sm sm:max-w-[320px]"
+              placeholder={tx("settings.apps.searchPlaceholder", "Search Apps")}
+              className="h-12 rounded-[14px] border-border/70 bg-card/90 pl-11 text-[15px] shadow-sm"
             />
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-10 justify-between rounded-full bg-card/80 px-4">
-                <span className="max-w-[180px] truncate">{categoryLabel}</span>
-                <ChevronDown className="ml-2 h-3.5 w-3.5" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="max-h-[320px] overflow-y-auto">
-              {categories.map((item) => (
-                <DropdownMenuItem key={item} onClick={() => onCategoryChange(item)}>
-                  {item === "all" ? tx("settings.cliApps.allCategories", "All categories") : item}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <SegmentedControl
+            value={filter}
+            options={filterOptions}
+            onChange={(value) => onFilterChange(value as AppsKindFilter)}
+          />
         </div>
       </section>
 
-      {visibleStatusMessage ? (
+      {statusMessage ? (
         <div
           className={cn(
-            "rounded-[10px] border px-3.5 py-2.5 text-[12.5px]",
-            error
+            "flex items-center justify-between gap-3 rounded-[12px] border py-2.5 pl-4 pr-2 text-[13px]",
+            statusIsError
               ? "border-destructive/20 bg-destructive/5 text-destructive"
               : "border-border/55 bg-muted/35 text-muted-foreground",
           )}
         >
-          {visibleStatusMessage}
+          <span className="min-w-0">{statusMessage}</span>
+          <button
+            type="button"
+            aria-label={tx("settings.actions.dismiss", "Dismiss")}
+            title={tx("settings.actions.dismiss", "Dismiss")}
+            onClick={onDismissStatus}
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors",
+              statusIsError
+                ? "text-destructive/70 hover:bg-destructive/10 hover:text-destructive"
+                : "text-muted-foreground/70 hover:bg-muted hover:text-foreground",
+            )}
+          >
+            <X className="h-3.5 w-3.5" aria-hidden />
+          </button>
         </div>
       ) : null}
 
       {focusedApp ? (
-        <CliAppReadyPanel
-          app={focusedApp}
-          showBrandLogos={showBrandLogos}
-          onBackToChat={onBackToChat}
+        <CliAppReadyPanel app={focusedApp} showBrandLogos={showBrandLogos} onBackToChat={onBackToChat} />
+      ) : null}
+
+      {requiresRestartPending ? (
+        <div className="flex flex-col gap-3 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-4 py-3 text-[12.5px] text-amber-800 dark:text-amber-200 sm:flex-row sm:items-center sm:justify-between">
+          <span>{tx("settings.mcp.restartRequired", "Restart nanobot to connect updated MCP tools.")}</span>
+          {onRestart ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onRestart}
+              disabled={isRestarting}
+              className="h-8 rounded-full bg-background/80 px-3 text-[12px] font-semibold"
+            >
+              {isRestarting ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
+              ) : (
+                <RotateCcw className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+              )}
+              {isRestarting ? t("app.system.restarting") : t("app.system.restart")}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <section>
+        <div className="flex items-center justify-between border-b border-border/45 pb-3">
+          <SettingsSectionTitle>{tx("settings.apps.featured", "Featured")}</SettingsSectionTitle>
+          <span className="rounded-full bg-muted px-2.5 py-1 text-[12px] font-medium text-muted-foreground">
+            {items.length}
+          </span>
+        </div>
+        {loading ? (
+          <div className="flex h-36 items-center justify-center text-sm text-muted-foreground">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+            {tx("settings.apps.loading", "Loading Apps...")}
+          </div>
+        ) : items.length ? (
+          <div className="grid gap-x-10 gap-y-1 py-3 md:grid-cols-2">
+            {items.map((item) =>
+              item.kind === "cli" ? (
+                <CliAppsCatalogRow
+                  key={item.id}
+                  app={item.app}
+                  actionKey={cliActionKey}
+                  showBrandLogos={showBrandLogos}
+                  onAction={onCliAction}
+                />
+              ) : (
+                <McpAppsCatalogRow
+                  key={item.id}
+                  preset={item.preset}
+                  values={mcpFieldValues[item.preset.name] ?? {}}
+                  actionKey={mcpActionKey}
+                  showBrandLogos={showBrandLogos}
+                  onFieldChange={onMcpFieldChange}
+                  onAction={onMcpAction}
+                  onToolsChange={onMcpToolsChange}
+                />
+              ),
+            )}
+          </div>
+        ) : (
+          <div className="px-3 py-12 text-center text-sm text-muted-foreground">
+            {tx("settings.apps.empty", "No apps match this filter.")}
+          </div>
+        )}
+      </section>
+
+      {filter !== "cli" ? (
+        <McpCustomServerPanel
+          form={customMcpForm}
+          configImport={mcpConfigImport}
+          actionKey={mcpActionKey}
+          onFormChange={onCustomMcpFormChange}
+          onConfigImportChange={onMcpConfigImportChange}
+          onSave={onSaveCustomMcp}
+          onImportConfig={onImportMcpConfig}
         />
       ) : null}
 
-      {loading ? (
-        <div className="flex h-36 items-center justify-center rounded-[8px] border border-border/45 bg-card/82 text-sm text-muted-foreground">
-          <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
-          {tx("settings.cliApps.loading", "Loading CLI Apps...")}
-        </div>
-      ) : (
-        <section>
-          <div className="grid gap-2">
-            {filteredApps.map((app) => (
-              <CliAppCard
-                key={app.name}
-                app={app}
-                actionKey={actionKey}
-                showBrandLogos={showBrandLogos}
-                onAction={onAction}
-              />
-            ))}
-          </div>
-          {!filteredApps.length ? (
-            <div className="rounded-[8px] border border-border/45 bg-card/82 px-4 py-8 text-center text-sm text-muted-foreground">
-              {tx("settings.cliApps.empty", "No CLI Apps match this filter.")}
-            </div>
-          ) : null}
-        </section>
-      )}
       <ThirdPartyBrandNotice />
     </div>
+  );
+}
+
+function CliAppsCatalogRow({
+  app,
+  actionKey,
+  showBrandLogos,
+  onAction,
+}: {
+  app: CliAppInfo;
+  actionKey: string | null;
+  showBrandLogos: boolean;
+  onAction: (action: "install" | "update" | "uninstall" | "test", name: string) => void;
+}) {
+  const { t } = useTranslation();
+  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
+  const installBusy = actionKey === `install:${app.name}`;
+  const updateBusy = actionKey === `update:${app.name}`;
+  const uninstallBusy = actionKey === `uninstall:${app.name}`;
+  const testBusy = actionKey === `test:${app.name}`;
+  const busy = installBusy || updateBusy || uninstallBusy || testBusy;
+  const description = app.description || app.requires || app.entry_point || app.name;
+
+  return (
+    <article className="group flex min-w-0 items-center gap-3 rounded-[14px] px-3 py-3 transition-colors hover:bg-muted/45">
+      <CliAppLogo app={app} showBrandLogos={showBrandLogos} />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h3 className="truncate text-[14px] font-semibold leading-5 text-foreground">{app.display_name}</h3>
+          <AppsTypeBadge>{tx("settings.apps.cliLabel", "CLI")}</AppsTypeBadge>
+        </div>
+        <p className="mt-0.5 truncate text-[12.5px] leading-5 text-muted-foreground">{description}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        {app.installed ? (
+          <>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <AppsActionButton
+                  ariaLabel={tx("settings.cliApps.statusInstalled", "CLI installed")}
+                  busy={testBusy || updateBusy}
+                  disabled={busy}
+                  tone="installed"
+                >
+                  <Check className="h-4 w-4" aria-hidden />
+                </AppsActionButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem disabled={busy} onClick={() => onAction("test", app.name)}>
+                  <PlayCircle className="mr-2 h-3.5 w-3.5" aria-hidden />
+                  {tx("settings.cliApps.test", "Test CLI")}
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy} onClick={() => onAction("update", app.name)}>
+                  <RotateCcw className="mr-2 h-3.5 w-3.5" aria-hidden />
+                  {tx("settings.cliApps.update", "Update CLI")}
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy} onClick={() => onAction("uninstall", app.name)}>
+                  <Trash2 className="mr-2 h-3.5 w-3.5" aria-hidden />
+                  {tx("settings.cliApps.uninstall", "Uninstall CLI")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <AppsActionButton
+              ariaLabel={tx("settings.cliApps.uninstall", "Uninstall CLI")}
+              busy={uninstallBusy}
+              disabled={busy && !uninstallBusy}
+              tone="danger"
+              onClick={() => onAction("uninstall", app.name)}
+            >
+              <Trash2 className="h-4 w-4" aria-hidden />
+            </AppsActionButton>
+          </>
+        ) : app.install_supported ? (
+          <AppsActionButton
+            ariaLabel={tx("settings.cliApps.install", "Install CLI")}
+            busy={installBusy}
+            onClick={() => onAction("install", app.name)}
+          >
+            <Plus className="h-4 w-4" aria-hidden />
+          </AppsActionButton>
+        ) : (
+          <AppsActionButton ariaLabel={tx("settings.cliApps.unavailable", "Unavailable")} disabled>
+            <Plus className="h-4 w-4" aria-hidden />
+          </AppsActionButton>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function McpAppsCatalogRow({
+  preset,
+  values,
+  actionKey,
+  showBrandLogos,
+  onFieldChange,
+  onAction,
+  onToolsChange,
+}: {
+  preset: McpPresetInfo;
+  values: Record<string, string>;
+  actionKey: string | null;
+  showBrandLogos: boolean;
+  onFieldChange: (presetName: string, fieldName: string, value: string) => void;
+  onAction: (action: "enable" | "remove" | "test", name: string, values?: Record<string, string>) => void;
+  onToolsChange: (name: string, enabledTools: string[]) => void;
+}) {
+  const { t } = useTranslation();
+  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const enableBusy = actionKey === `enable:${preset.name}`;
+  const removeBusy = actionKey === `remove:${preset.name}`;
+  const testBusy = actionKey === `test:${preset.name}`;
+  const toolsBusy = actionKey === `tools:${preset.name}`;
+  const busy = enableBusy || removeBusy || testBusy || toolsBusy;
+  const missingFields = preset.required_fields.filter((field) => field.required && !field.configured);
+  const hasFields = preset.required_fields.length > 0;
+  const needsSetupInput = missingFields.length > 0;
+  const readyInstalled = preset.installed && preset.configured;
+  const canEnable =
+    preset.install_supported &&
+    (missingFields.length === 0 || missingFields.every((field) => Boolean(values[field.name]?.trim())));
+  const toolNames = preset.tool_names ?? [];
+  const enabledTools = preset.enabled_tools ?? ["*"];
+  const allowAllTools = enabledTools.includes("*");
+  const enabledSet = new Set(allowAllTools ? toolNames : enabledTools);
+  const description = preset.description || preset.note || preset.requires || preset.name;
+  const statusLabel = mcpPresetStatusLabel(preset.status, tx);
+
+  useEffect(() => {
+    if (preset.configured || !preset.install_supported) setSetupOpen(false);
+  }, [preset.configured, preset.install_supported]);
+
+  const enableOrOpenSetup = () => {
+    if (needsSetupInput || (preset.installed && !preset.configured && hasFields)) {
+      setSetupOpen(true);
+      return;
+    }
+    onAction("enable", preset.name, values);
+  };
+  const submitSetup = () => {
+    if (!canEnable) return;
+    onAction("enable", preset.name, values);
+  };
+  const setTools = (next: string[]) => onToolsChange(preset.name, next);
+  const toggleTool = (toolName: string) => {
+    const next = new Set(allowAllTools ? toolNames : enabledTools);
+    if (next.has(toolName)) next.delete(toolName);
+    else next.add(toolName);
+    const nextValues = Array.from(next);
+    setTools(nextValues.length === toolNames.length ? ["*"] : nextValues);
+  };
+
+  return (
+    <article className="rounded-[14px] transition-colors hover:bg-muted/45">
+      <div className="group flex min-w-0 items-center gap-3 px-3 py-3">
+        <McpPresetLogo preset={preset} showBrandLogos={showBrandLogos} />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <h3 className="truncate text-[14px] font-semibold leading-5 text-foreground">{preset.display_name}</h3>
+            <AppsTypeBadge>{tx("settings.apps.mcpLabel", "MCP")}</AppsTypeBadge>
+          </div>
+          <p className="mt-0.5 truncate text-[12.5px] leading-5 text-muted-foreground">{description}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {readyInstalled ? (
+            <>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <AppsActionButton
+                    ariaLabel={statusLabel}
+                    busy={testBusy || toolsBusy}
+                    disabled={busy}
+                    tone="installed"
+                  >
+                    <Check className="h-4 w-4" aria-hidden />
+                  </AppsActionButton>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem disabled={busy} onClick={() => onAction("test", preset.name)}>
+                    <PlayCircle className="mr-2 h-3.5 w-3.5" aria-hidden />
+                    {tx("settings.mcp.test", "Test")}
+                  </DropdownMenuItem>
+                  {toolNames.length ? (
+                    <DropdownMenuItem disabled={busy} onClick={() => setToolsOpen((open) => !open)}>
+                      <SlidersHorizontal className="mr-2 h-3.5 w-3.5" aria-hidden />
+                      {tx("settings.mcp.toolScope", "Tools")}
+                    </DropdownMenuItem>
+                  ) : null}
+                  <DropdownMenuItem disabled={busy} onClick={() => onAction("remove", preset.name)}>
+                    <Trash2 className="mr-2 h-3.5 w-3.5" aria-hidden />
+                    {tx("settings.mcp.remove", "Remove")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <AppsActionButton
+                ariaLabel={tx("settings.mcp.remove", "Remove")}
+                busy={removeBusy}
+                disabled={busy && !removeBusy}
+                tone="danger"
+                onClick={() => onAction("remove", preset.name)}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden />
+              </AppsActionButton>
+            </>
+          ) : preset.installed && !preset.configured ? (
+            <AppsActionButton
+              ariaLabel={hasFields ? tx("settings.mcp.configure", "Configure") : tx("settings.mcp.enable", "Enable")}
+              busy={enableBusy}
+              onClick={() => {
+                if (hasFields) setSetupOpen(true);
+                else onAction("enable", preset.name, values);
+              }}
+            >
+              <Plus className="h-4 w-4" aria-hidden />
+            </AppsActionButton>
+          ) : preset.install_supported ? (
+            <AppsActionButton
+              ariaLabel={needsSetupInput ? tx("settings.mcp.setup", "Set up") : tx("settings.mcp.enable", "Enable")}
+              busy={enableBusy}
+              onClick={enableOrOpenSetup}
+            >
+              <Plus className="h-4 w-4" aria-hidden />
+            </AppsActionButton>
+          ) : (
+            <AppsActionButton ariaLabel={tx("settings.mcp.comingSoon", "Coming soon")} disabled>
+              <Plus className="h-4 w-4" aria-hidden />
+            </AppsActionButton>
+          )}
+        </div>
+      </div>
+
+      {setupOpen && preset.install_supported && hasFields ? (
+        <div className="mx-3 mb-3 rounded-[14px] border border-border/45 bg-card/85 p-3 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="truncate text-[12.5px] font-semibold text-foreground">
+                {tx("settings.mcp.connectTitle", "Connect {{name}}").replace("{{name}}", preset.display_name)}
+              </div>
+              <p className="mt-0.5 text-[11.5px] text-muted-foreground">
+                {tx("settings.mcp.connectHint", "Add the key from your account settings.")}
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => setSetupOpen(false)}
+              className="h-7 rounded-full px-2.5 text-[11.5px] font-semibold text-muted-foreground"
+            >
+              {tx("actions.cancel", "Cancel")}
+            </Button>
+          </div>
+          <div className="mt-3 grid gap-2">
+            {preset.required_fields.map((field) => (
+              <label key={field.name} className="min-w-0">
+                <span className="mb-1 block text-[11.5px] font-medium text-muted-foreground">
+                  {field.label}
+                  {field.configured ? (
+                    <span className="ml-1 font-normal text-emerald-600 dark:text-emerald-300">
+                      {tx("settings.mcp.configured", "configured")}
+                    </span>
+                  ) : null}
+                </span>
+                <Input
+                  type={field.secret ? "password" : "text"}
+                  value={values[field.name] ?? ""}
+                  onChange={(event) => onFieldChange(preset.name, field.name, event.target.value)}
+                  placeholder={
+                    field.configured
+                      ? tx("settings.mcp.keepExisting", "Leave blank to keep existing")
+                      : field.placeholder
+                  }
+                  className="h-9 rounded-full bg-background/80 text-[12.5px]"
+                />
+              </label>
+            ))}
+          </div>
+          <div className="mt-3 flex justify-end">
+            <Button
+              type="button"
+              size="sm"
+              disabled={busy || !canEnable}
+              onClick={submitSetup}
+              className="h-8 rounded-full px-3 text-[12px] font-semibold"
+            >
+              {enableBusy ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
+              ) : (
+                <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+              )}
+              {preset.installed
+                ? tx("settings.mcp.updateSetup", "Update setup")
+                : tx("settings.mcp.saveAndEnable", "Save and enable")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {toolsOpen && readyInstalled && toolNames.length ? (
+        <div className="mx-3 mb-3 rounded-[14px] border border-border/45 bg-card/85 p-3 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[11.5px] font-medium text-muted-foreground">
+              {tx("settings.mcp.toolScope", "Tools")}
+            </div>
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                size="sm"
+                variant={allowAllTools ? "default" : "outline"}
+                disabled={toolsBusy}
+                onClick={() => setTools(["*"])}
+                className="h-7 rounded-full px-2.5 text-[11.5px] font-semibold"
+              >
+                {tx("settings.mcp.allTools", "All")}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={!allowAllTools && enabledSet.size === 0 ? "default" : "outline"}
+                disabled={toolsBusy}
+                onClick={() => setTools([])}
+                className="h-7 rounded-full px-2.5 text-[11.5px] font-semibold"
+              >
+                {tx("settings.mcp.noTools", "None")}
+              </Button>
+            </div>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {toolNames.map((toolName) => {
+              const selected = enabledSet.has(toolName);
+              return (
+                <button
+                  key={toolName}
+                  type="button"
+                  disabled={toolsBusy}
+                  onClick={() => toggleTool(toolName)}
+                  className={cn(
+                    "max-w-full rounded-full border px-2.5 py-1 font-mono text-[11px] transition-colors",
+                    selected
+                      ? "border-blue-500/25 bg-blue-500/10 text-blue-700 dark:text-blue-300"
+                      : "border-border/55 bg-muted/30 text-muted-foreground hover:bg-muted/60",
+                  )}
+                >
+                  <span className="block max-w-[220px] truncate">{toolName}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function AppsTypeBadge({ children }: { children: ReactNode }) {
+  return (
+    <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none tracking-[0.06em] text-muted-foreground">
+      {children}
+    </span>
+  );
+}
+
+const AppsActionButton = forwardRef<HTMLButtonElement, {
+  ariaLabel: string;
+  busy?: boolean;
+  disabled?: boolean;
+  tone?: "default" | "installed" | "danger";
+  onClick?: () => void;
+  children: ReactNode;
+}>(function AppsActionButton({
+  ariaLabel,
+  busy,
+  disabled,
+  tone = "default",
+  onClick,
+  children,
+}, ref) {
+  return (
+    <Button
+      ref={ref}
+      type="button"
+      size="icon"
+      variant="ghost"
+      aria-label={ariaLabel}
+      title={ariaLabel}
+      disabled={disabled || busy}
+      onClick={onClick}
+      className={cn(
+        "h-9 w-9 rounded-full text-muted-foreground transition-colors",
+        tone === "installed" && "bg-transparent hover:bg-muted/70 hover:text-foreground",
+        tone === "danger" && "bg-transparent hover:bg-destructive/10 hover:text-destructive",
+        tone === "default" && "bg-muted/70 hover:bg-muted hover:text-foreground",
+      )}
+    >
+      {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : children}
+    </Button>
+  );
+});
+
+function appsTitle(item: AppsCatalogItem): string {
+  return item.kind === "cli" ? item.app.display_name : item.preset.display_name;
+}
+
+function appsReady(item: AppsCatalogItem): boolean {
+  return item.kind === "cli" ? item.app.installed : item.preset.installed && item.preset.configured;
+}
+
+function appsSearchText(item: AppsCatalogItem): string {
+  if (item.kind === "cli") {
+    const app = item.app;
+    return [
+      app.display_name,
+      app.name,
+      app.category,
+      app.description,
+      app.requires,
+      app.entry_point,
+      app.source,
+    ]
+      .join(" ")
+      .toLowerCase();
+  }
+  const preset = item.preset;
+  return [
+    preset.display_name,
+    preset.name,
+    preset.category,
+    preset.description,
+    preset.requires,
+    preset.note,
+    preset.transport,
+    preset.source ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+function McpCustomServerPanel({
+  form,
+  configImport,
+  actionKey,
+  onFormChange,
+  onConfigImportChange,
+  onSave,
+  onImportConfig,
+}: {
+  form: CustomMcpForm;
+  configImport: string;
+  actionKey: string | null;
+  onFormChange: Dispatch<SetStateAction<CustomMcpForm>>;
+  onConfigImportChange: (value: string) => void;
+  onSave: () => void;
+  onImportConfig: () => void;
+}) {
+  const { t } = useTranslation();
+  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
+  const [activeMode, setActiveMode] = useState<"custom" | "import" | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const customBusy = actionKey?.startsWith("custom:") ?? false;
+  const importBusy = actionKey === "import" || actionKey === "import-cursor";
+  const remote = form.transport !== "stdio";
+  const canSave = Boolean(form.name.trim()) && (remote ? Boolean(form.url.trim()) : Boolean(form.command.trim()));
+  const update = <K extends keyof CustomMcpForm>(key: K, value: CustomMcpForm[K]) => {
+    onFormChange((prev) => ({ ...prev, [key]: value }));
+  };
+  const transports: Array<{ value: CustomMcpTransport; label: string }> = [
+    { value: "stdio", label: "stdio" },
+    { value: "streamableHttp", label: "HTTP" },
+    { value: "sse", label: "SSE" },
+  ];
+
+  return (
+    <section className="overflow-hidden rounded-[16px] border border-border/45 bg-card/72 shadow-[0_10px_30px_rgba(15,23,42,0.045)]">
+      <div className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-[11px] bg-muted text-muted-foreground">
+            <Server className="h-4 w-4" aria-hidden />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-[13px] font-semibold leading-5 text-foreground">
+              {tx("settings.mcp.moreOptions", "More MCP options")}
+            </h3>
+            <p className="truncate text-[12px] text-muted-foreground">
+              {tx("settings.mcp.moreOptionsSubtitle", "Add a custom server or import mcp.json.")}
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0">
+          <Button
+            type="button"
+            size="sm"
+            variant={activeMode === "custom" ? "default" : "outline"}
+            onClick={() => setActiveMode((mode) => (mode === "custom" ? null : "custom"))}
+            className="h-8 rounded-full px-3 text-[12px] font-semibold"
+          >
+            <Server className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+            {tx("settings.mcp.customAction", "Custom")}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={activeMode === "import" ? "default" : "outline"}
+            onClick={() => setActiveMode((mode) => (mode === "import" ? null : "import"))}
+            className="h-8 rounded-full px-3 text-[12px] font-semibold"
+          >
+            <Database className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+            {tx("settings.mcp.importAction", "Import")}
+          </Button>
+        </div>
+      </div>
+
+      {activeMode === "custom" ? (
+        <div className="border-t border-border/35 bg-muted/18 px-3 py-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+            <label className="min-w-0 flex-1">
+              <span className="mb-1.5 block text-[11.5px] font-medium text-muted-foreground">
+                {tx("settings.mcp.serverName", "Server name")}
+              </span>
+              <Input
+                value={form.name}
+                onChange={(event) => update("name", event.target.value)}
+                placeholder="docs"
+                className="h-9 rounded-full bg-background/80 text-[12.5px]"
+              />
+            </label>
+            <div className="min-w-[228px]">
+              <span className="mb-1.5 block text-[11.5px] font-medium text-muted-foreground">
+                {tx("settings.mcp.transport", "Transport")}
+              </span>
+              <SegmentedControl
+                value={form.transport}
+                options={transports}
+                onChange={(value) => update("transport", value as CustomMcpTransport)}
+              />
+            </div>
+            {remote ? (
+              <label className="min-w-0 flex-[1.4]">
+                <span className="mb-1.5 block text-[11.5px] font-medium text-muted-foreground">
+                  {tx("settings.mcp.serverUrl", "URL")}
+                </span>
+                <Input
+                  value={form.url}
+                  onChange={(event) => update("url", event.target.value)}
+                  placeholder={form.transport === "sse" ? "https://example.com/sse" : "https://example.com/mcp"}
+                  className="h-9 rounded-full bg-background/80 text-[12.5px]"
+                />
+              </label>
+            ) : (
+              <label className="min-w-0 flex-[1.4]">
+                <span className="mb-1.5 block text-[11.5px] font-medium text-muted-foreground">
+                  {tx("settings.mcp.command", "Command")}
+                </span>
+                <Input
+                  value={form.command}
+                  onChange={(event) => update("command", event.target.value)}
+                  placeholder="npx"
+                  className="h-9 rounded-full bg-background/80 text-[12.5px]"
+                />
+              </label>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              onClick={onSave}
+              disabled={!canSave || customBusy}
+              className="h-9 shrink-0 rounded-full px-4 text-[12.5px] font-semibold"
+            >
+              {customBusy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden /> : <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
+              {tx("settings.mcp.saveCustom", "Save MCP")}
+            </Button>
+          </div>
+
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => setAdvancedOpen((open) => !open)}
+            className="mt-2 h-8 rounded-full px-2 text-[12px] font-medium text-muted-foreground hover:text-foreground"
+          >
+            <ChevronDown
+              className={cn("mr-1.5 h-3.5 w-3.5 transition-transform", advancedOpen ? "rotate-180" : "")}
+              aria-hidden
+            />
+            {advancedOpen
+              ? tx("settings.mcp.hideAdvanced", "Hide advanced")
+              : tx("settings.mcp.advancedOptions", "Advanced options")}
+          </Button>
+
+          {advancedOpen ? (
+            <div className="mt-2 grid gap-2 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_180px]">
+              {!remote ? (
+                <label className="min-w-0">
+                  <span className="mb-1 block text-[11.5px] font-medium text-muted-foreground">
+                    {tx("settings.mcp.args", "Args JSON")}
+                  </span>
+                  <Textarea
+                    value={form.args}
+                    onChange={(event) => update("args", event.target.value)}
+                    placeholder={'["-y", "docs-mcp"]'}
+                    className="min-h-[68px] resize-y rounded-[12px] bg-background/80 font-mono text-[12px]"
+                  />
+                </label>
+              ) : (
+                <label className="min-w-0">
+                  <span className="mb-1 block text-[11.5px] font-medium text-muted-foreground">
+                    {tx("settings.mcp.headers", "Headers JSON")}
+                  </span>
+                  <Textarea
+                    value={form.headers}
+                    onChange={(event) => update("headers", event.target.value)}
+                    placeholder={'{"Authorization":"Bearer ..."}'}
+                    className="min-h-[68px] resize-y rounded-[12px] bg-background/80 font-mono text-[12px]"
+                  />
+                </label>
+              )}
+              <label className="min-w-0">
+                <span className="mb-1 block text-[11.5px] font-medium text-muted-foreground">
+                  {tx("settings.mcp.env", "Env JSON")}
+                </span>
+                <Textarea
+                  value={form.env}
+                  onChange={(event) => update("env", event.target.value)}
+                  placeholder={'{"API_KEY":"..."}'}
+                  className="min-h-[68px] resize-y rounded-[12px] bg-background/80 font-mono text-[12px]"
+                />
+              </label>
+              <label className="min-w-0">
+                <span className="mb-1 block text-[11.5px] font-medium text-muted-foreground">
+                  {tx("settings.mcp.timeout", "Tool timeout")}
+                </span>
+                <Input
+                  value={form.toolTimeout}
+                  onChange={(event) => update("toolTimeout", event.target.value)}
+                  inputMode="numeric"
+                  className="h-9 rounded-full bg-background/80 text-[12.5px]"
+                />
+              </label>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {activeMode === "import" ? (
+        <div className="border-t border-border/35 bg-muted/18 px-3 py-3">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-end">
+            <label className="min-w-0 flex-1">
+              <span className="mb-1.5 block text-[11.5px] font-medium text-muted-foreground">
+                {tx("settings.mcp.configImport", "Import mcp.json")}
+              </span>
+              <Textarea
+                value={configImport}
+                onChange={(event) => onConfigImportChange(event.target.value)}
+                placeholder={'{"mcpServers":{"docs":{"command":"npx","args":["-y","docs-mcp"]}}}'}
+                className="min-h-[84px] resize-y rounded-[12px] bg-background/80 font-mono text-[12px]"
+              />
+            </label>
+            <Button
+              type="button"
+              size="sm"
+              onClick={onImportConfig}
+              disabled={!configImport.trim() || importBusy}
+              className="h-9 shrink-0 rounded-full px-4 text-[12.5px] font-semibold"
+            >
+              {importBusy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden /> : <Database className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
+              {tx("settings.mcp.importConfig", "Import")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function mcpPresetStatusLabel(status: string, tx: (key: string, fallback: string) => string): string {
+  switch (status) {
+    case "configured":
+      return tx("settings.mcp.statusConfigured", "Configured");
+    case "missing_credentials":
+      return tx("settings.mcp.statusMissingCredentials", "Needs key");
+    case "missing_dependency":
+      return tx("settings.mcp.statusMissingDependency", "Needs dependency");
+    case "coming_soon":
+      return tx("settings.mcp.statusComingSoon", "Coming soon");
+    default:
+      return tx("settings.mcp.statusNotInstalled", "Not enabled");
+  }
+}
+
+function McpPresetLogo({ preset, showBrandLogos }: { preset: McpPresetInfo; showBrandLogos: boolean }) {
+  const [logoIndex, setLogoIndex] = useState(0);
+  const bg = preset.brand_color || "hsl(var(--muted))";
+  const logoUrls = useMemo(() => logoFallbackUrls(preset.logo_url), [preset.logo_url]);
+  const logoUrl = logoUrls[logoIndex];
+  const initials = preset.display_name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || preset.name.slice(0, 2).toUpperCase();
+
+  useEffect(() => setLogoIndex(0), [preset.logo_url]);
+
+  if (showBrandLogos && logoUrl) {
+    return (
+      <span
+        className="grid h-11 w-11 shrink-0 place-items-center rounded-[8px] border border-border/45 bg-background"
+        style={{ boxShadow: `inset 0 0 0 1px ${preset.brand_color ?? "transparent"}22` }}
+      >
+        <img
+          src={logoUrl}
+          alt=""
+          className="h-6 w-6 object-contain"
+          onError={() => setLogoIndex((index) => index + 1)}
+        />
+      </span>
+    );
+  }
+  return (
+    <span
+      className="grid h-11 w-11 shrink-0 place-items-center rounded-[8px] text-[13px] font-semibold text-white"
+      style={{ backgroundColor: bg }}
+    >
+      {initials}
+    </span>
   );
 }
 
@@ -2174,125 +3451,31 @@ function CliAppReadyPanel({
   );
 }
 
-function CliAppCard({
-  app,
-  actionKey,
-  showBrandLogos,
-  onAction,
-}: {
-  app: CliAppInfo;
-  actionKey: string | null;
-  showBrandLogos: boolean;
-  onAction: (action: "install" | "update" | "uninstall" | "test", name: string) => void;
-}) {
-  const { t } = useTranslation();
-  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  const installBusy = actionKey === `install:${app.name}`;
-  const updateBusy = actionKey === `update:${app.name}`;
-  const uninstallBusy = actionKey === `uninstall:${app.name}`;
-  const testBusy = actionKey === `test:${app.name}`;
-  const busy = installBusy || updateBusy || uninstallBusy || testBusy;
-
-  return (
-    <article className="flex min-w-0 items-center gap-3 rounded-[8px] border border-border/45 bg-card/82 px-4 py-3 shadow-[0_6px_22px_rgba(15,23,42,0.045)]">
-      <CliAppLogo app={app} showBrandLogos={showBrandLogos} />
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-baseline gap-2">
-          <h3 className="truncate text-[14px] font-semibold leading-5 text-foreground">
-            {app.display_name}
-          </h3>
-          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground">
-            {app.category}
-          </span>
-        </div>
-        <div className="mt-0.5 truncate text-[12px] text-muted-foreground">
-          {app.entry_point || app.name}
-        </div>
-        <p className="mt-1 truncate text-[12px] leading-5 text-muted-foreground">
-          {app.requires
-            ? `${tx("settings.cliApps.requires", "Requires")}: ${app.requires}`
-            : app.description || tx("settings.cliApps.noDescription", "No description available.")}
-        </p>
-      </div>
-      <div className="shrink-0">
-        {app.installed ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={busy}
-                className="h-8 rounded-full border-emerald-500/20 bg-emerald-500/10 px-3 text-[12px] font-semibold text-emerald-700 hover:bg-emerald-500/12 dark:text-emerald-300"
-              >
-                {busy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden /> : <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
-                {tx("settings.cliApps.statusInstalled", "CLI installed")}
-                <ChevronDown className="ml-1.5 h-3 w-3" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem disabled={busy} onClick={() => onAction("test", app.name)}>
-                <PlayCircle className="mr-2 h-3.5 w-3.5" aria-hidden />
-                {tx("settings.cliApps.test", "Test CLI")}
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={busy} onClick={() => onAction("update", app.name)}>
-                <RotateCcw className="mr-2 h-3.5 w-3.5" aria-hidden />
-                {tx("settings.cliApps.update", "Update CLI")}
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={busy} onClick={() => onAction("uninstall", app.name)}>
-                <Trash2 className="mr-2 h-3.5 w-3.5" aria-hidden />
-                {tx("settings.cliApps.uninstall", "Uninstall CLI")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : app.install_supported ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={() => onAction("install", app.name)}
-            className="h-8 rounded-full px-4 text-[12px] font-semibold"
-          >
-            {installBusy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
-            {tx("settings.cliApps.install", "Install CLI")}
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled
-            className="h-8 rounded-full px-3 text-[12px] font-semibold"
-          >
-            {tx("settings.cliApps.unavailable", "Unavailable")}
-          </Button>
-        )}
-      </div>
-    </article>
-  );
-}
-
 function CliAppLogo({ app, showBrandLogos }: { app: CliAppInfo; showBrandLogos: boolean }) {
-  const [failed, setFailed] = useState(false);
+  const [logoIndex, setLogoIndex] = useState(0);
   const bg = app.brand_color || "hsl(var(--muted))";
+  const logoUrls = useMemo(() => logoFallbackUrls(app.logo_url), [app.logo_url]);
+  const logoUrl = logoUrls[logoIndex];
   const initials = app.display_name
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("") || app.name.slice(0, 2).toUpperCase();
-  if (showBrandLogos && app.logo_url && !failed) {
+
+  useEffect(() => setLogoIndex(0), [app.logo_url]);
+
+  if (showBrandLogos && logoUrl) {
     return (
       <span
         className="grid h-11 w-11 shrink-0 place-items-center rounded-[8px] border border-border/45 bg-background"
         style={{ boxShadow: `inset 0 0 0 1px ${app.brand_color ?? "transparent"}22` }}
       >
         <img
-          src={app.logo_url}
+          src={logoUrl}
           alt=""
           className="h-6 w-6 object-contain"
-          onError={() => setFailed(true)}
+          onError={() => setLogoIndex((index) => index + 1)}
         />
       </span>
     );
@@ -2350,18 +3533,9 @@ function RuntimeSettings({
             />
           </SettingsRow>
           <SettingsRow title={tx("settings.rows.timezone", "Timezone")} description={tx("settings.help.timezone", "IANA timezone used by runtime context and schedules.")}>
-            <Input
+            <TimezonePicker
               value={form.timezone}
-              onChange={(event) => setForm((prev) => ({ ...prev, timezone: event.target.value }))}
-              className="h-8 w-[220px] rounded-full text-[13px]"
-            />
-          </SettingsRow>
-          <SettingsRow title={tx("settings.rows.toolHintMaxLength", "Tool hint length")} description={tx("settings.help.toolHintMaxLength", "Maximum characters shown in tool progress hints.")}>
-            <NumberInput
-              value={form.toolHintMaxLength}
-              min={20}
-              max={500}
-              onChange={(toolHintMaxLength) => setForm((prev) => ({ ...prev, toolHintMaxLength }))}
+              onChange={(timezone) => setForm((prev) => ({ ...prev, timezone }))}
             />
           </SettingsRow>
           <RestartSettingsFooter
@@ -2452,15 +3626,97 @@ function AdvancedSettings({ settings }: { settings: SettingsPayload }) {
   );
 }
 
+function TimezonePicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (timezone: string) => void;
+}) {
+  const { t } = useTranslation();
+  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
+  const [query, setQuery] = useState("");
+  const options = useMemo(() => timezoneOptions(value), [value]);
+  const filteredOptions = useMemo(() => filterTimezoneOptions(options, query), [options, query]);
+
+  return (
+    <DropdownMenu onOpenChange={(open) => !open && setQuery("")}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          className={cn(
+            "h-8 w-[220px] justify-between rounded-full border-input bg-background px-3 text-[13px] font-normal shadow-none",
+            "hover:bg-accent/55 focus-visible:ring-2 focus-visible:ring-ring",
+          )}
+        >
+          <span className="truncate">{value || tx("settings.timezone.select", "Select timezone")}</span>
+          <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="w-[340px] max-w-[calc(100vw-2rem)] rounded-[18px] border-border/65 bg-popover p-1.5 text-popover-foreground shadow-[0_18px_55px_rgba(15,23,42,0.18)] dark:border-white/10 dark:shadow-[0_22px_55px_rgba(0,0,0,0.45)]"
+      >
+        <div className="sticky top-0 z-10 bg-popover px-1 pb-1">
+          <div className="flex h-9 items-center gap-2 rounded-full border border-input bg-background px-3">
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+            <Input
+              autoFocus
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => event.stopPropagation()}
+              placeholder={tx("settings.timezone.search", "Search timezone")}
+              className="h-7 border-0 bg-transparent px-0 text-[13px] shadow-none focus-visible:ring-0"
+            />
+          </div>
+        </div>
+        <div className="mt-1 max-h-[18rem] overflow-y-auto pr-0.5" data-testid="timezone-picker-list">
+          {filteredOptions.length ? (
+            filteredOptions.map((option) => {
+              const selected = option.name === value;
+              return (
+                <DropdownMenuItem
+                  key={option.name}
+                  onSelect={() => onChange(option.name)}
+                  className={cn(
+                    "flex h-9 cursor-default items-center justify-between gap-3 rounded-[12px] px-2.5 text-[13px]",
+                    "focus:bg-muted/85 focus:text-foreground",
+                    selected && "bg-muted/80 text-foreground focus:bg-muted",
+                  )}
+                >
+                  <span className="min-w-0 truncate font-medium text-foreground">{option.name}</span>
+                  <span className="ml-auto flex shrink-0 items-center gap-2">
+                    <span className="text-[11.5px] font-medium text-muted-foreground/80">
+                      {option.offset}
+                    </span>
+                    {selected ? <Check className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+                  </span>
+                </DropdownMenuItem>
+              );
+            })
+          ) : (
+            <div className="px-3 py-5 text-center text-[12px] text-muted-foreground">
+              {tx("settings.timezone.empty", "No matching timezones.")}
+            </div>
+          )}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function ProviderPicker({
   providers,
   value,
   emptyLabel,
+  showProviderLogos = false,
   onChange,
 }: {
   providers: Array<{ name: string; label: string }>;
   value: string;
   emptyLabel: string;
+  showProviderLogos?: boolean;
   onChange: (provider: string) => void;
 }) {
   const selectedProvider = providers.find((provider) => provider.name === value) ?? null;
@@ -2479,7 +3735,15 @@ function ProviderPicker({
             disabled && "text-muted-foreground",
           )}
         >
-          <span className="truncate">{selectedProvider?.label ?? emptyLabel}</span>
+          <span className="flex min-w-0 items-center gap-2">
+            {selectedProvider && showProviderLogos ? (
+              <ProviderPickerIcon
+                provider={selectedProvider.name}
+                showBrandLogos={showProviderLogos}
+              />
+            ) : null}
+            <span className="truncate">{selectedProvider?.label ?? emptyLabel}</span>
+          </span>
           <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
         </Button>
       </DropdownMenuTrigger>
@@ -2494,18 +3758,81 @@ function ProviderPicker({
               key={provider.name}
               onSelect={() => onChange(provider.name)}
               className={cn(
-                "flex cursor-default items-center justify-between gap-2 rounded-[12px] px-3 py-2 text-[13px]",
-                "focus:bg-muted focus:text-foreground",
-                selected && "bg-primary/10 text-primary focus:bg-primary/12 focus:text-primary",
+                "flex cursor-default items-center justify-between gap-2 rounded-[12px] px-2.5 py-2 text-[13px]",
+                "focus:bg-muted/85 focus:text-foreground",
+                selected && "bg-muted/80 text-foreground focus:bg-muted",
               )}
             >
-              <span className="truncate">{provider.label}</span>
+              <span className="flex min-w-0 items-center gap-2">
+                {showProviderLogos ? (
+                  <ProviderPickerIcon
+                    provider={provider.name}
+                    showBrandLogos={showProviderLogos}
+                  />
+                ) : null}
+                <span className="truncate">{provider.label}</span>
+              </span>
               {selected ? <Check className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
             </DropdownMenuItem>
           );
         })}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+function ProviderPickerIcon({
+  provider,
+  showBrandLogos,
+}: {
+  provider: string;
+  showBrandLogos: boolean;
+}) {
+  const [logoIndex, setLogoIndex] = useState(0);
+  const brand = providerBrand(provider);
+  const Icon = PROVIDER_ICONS[provider] ?? Sparkles;
+  const logoUrl = brand?.logoUrls[logoIndex];
+
+  useEffect(() => setLogoIndex(0), [provider]);
+
+  if (showBrandLogos && logoUrl) {
+    return (
+      <span
+        data-testid={`provider-picker-logo-${provider}`}
+        className="grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-md border border-border/35 bg-background shadow-[inset_0_0_0_1px_rgba(0,0,0,0.02)]"
+        style={{ boxShadow: `inset 0 0 0 1px ${brand.color}22` }}
+        aria-hidden
+      >
+        <img
+          src={logoUrl}
+          alt=""
+          className="h-3.5 w-3.5 object-contain"
+          onError={() => setLogoIndex((index) => index + 1)}
+        />
+      </span>
+    );
+  }
+
+  if (showBrandLogos && brand) {
+    return (
+      <span
+        data-testid={`provider-picker-logo-fallback-${provider}`}
+        className="grid h-5 w-5 shrink-0 place-items-center rounded-md text-[7.5px] font-semibold text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.18)]"
+        style={{ backgroundColor: brand.color }}
+        aria-hidden
+      >
+        {brand.initials}
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground"
+      aria-hidden
+    >
+      <Icon className="h-3 w-3" strokeWidth={2} />
+    </span>
   );
 }
 
@@ -2599,6 +3926,62 @@ function filterProviders(
   );
 }
 
+interface TimezoneOption {
+  name: string;
+  offset: string;
+  searchText: string;
+}
+
+function timezoneOptions(current: string): TimezoneOption[] {
+  return timezonesWithCurrent(current).map((name) => {
+    const offset = timezoneOffset(name);
+    return {
+      name,
+      offset,
+      searchText: `${name} ${name.replace(/_/g, " ")} ${offset}`.toLowerCase(),
+    };
+  });
+}
+
+function timezonesWithCurrent(current: string): string[] {
+  const intl = Intl as typeof Intl & {
+    supportedValuesOf?: (key: "timeZone") => string[];
+  };
+  let values: string[] = [];
+  try {
+    values = intl.supportedValuesOf?.("timeZone") ?? [];
+  } catch {
+    values = [];
+  }
+  const deduped = new Set([...FALLBACK_TIMEZONES, ...values, current].filter(Boolean));
+  return Array.from(deduped).sort((left, right) => {
+    if (left === "UTC") return -1;
+    if (right === "UTC") return 1;
+    return left.localeCompare(right);
+  });
+}
+
+function filterTimezoneOptions(options: TimezoneOption[], query: string): TimezoneOption[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return options;
+  return options.filter((option) => option.searchText.includes(normalized));
+}
+
+function timezoneOffset(timezone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      timeZoneName: "shortOffset",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).formatToParts(new Date());
+    const value = parts.find((part) => part.type === "timeZoneName")?.value;
+    return value ? value.replace(/^GMT$/, "UTC").replace(/^GMT/, "UTC") : "UTC";
+  } catch {
+    return "Custom timezone";
+  }
+}
+
 function optionRowsWithCurrent(
   options: Array<{ name: string; label: string }>,
   value: string,
@@ -2607,68 +3990,16 @@ function optionRowsWithCurrent(
   return [{ name: value, label: value }, ...options];
 }
 
-function providerLabel(
-  providers: Array<{ name: string; label: string }>,
-  value: string,
+function modelPresetProviderKey(
+  preset: SettingsPayload["model_presets"][number],
+  settings: SettingsPayload,
+  options: { draftProvider?: string } = {},
 ): string {
-  return providers.find((provider) => provider.name === value)?.label ?? value;
-}
-
-interface ProviderBrand {
-  logoUrl: string;
-  color: string;
-  initials: string;
-}
-
-function faviconUrl(domain: string): string {
-  return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
-}
-
-const PROVIDER_BRAND_ALIASES: Record<string, string> = {
-  byteplus_coding_plan: "byteplus",
-  minimax_anthropic: "minimax",
-  openai_codex: "openai",
-  volcengine_coding_plan: "volcengine",
-};
-
-const PROVIDER_BRANDS: Record<string, ProviderBrand> = {
-  aihubmix: { logoUrl: faviconUrl("aihubmix.com"), color: "#111827", initials: "AH" },
-  ant_ling: { logoUrl: faviconUrl("ant-ling.com"), color: "#7C3AED", initials: "AL" },
-  anthropic: { logoUrl: faviconUrl("anthropic.com"), color: "#D97757", initials: "A" },
-  atomic_chat: { logoUrl: faviconUrl("atomic.chat"), color: "#111827", initials: "AC" },
-  azure_openai: { logoUrl: faviconUrl("azure.microsoft.com"), color: "#0078D4", initials: "AZ" },
-  bedrock: { logoUrl: faviconUrl("aws.amazon.com"), color: "#FF9900", initials: "AWS" },
-  byteplus: { logoUrl: faviconUrl("byteplus.com"), color: "#325CFF", initials: "BP" },
-  dashscope: { logoUrl: faviconUrl("dashscope.aliyun.com"), color: "#FF6A00", initials: "DS" },
-  deepseek: { logoUrl: faviconUrl("deepseek.com"), color: "#4D6BFE", initials: "DS" },
-  gemini: { logoUrl: faviconUrl("gemini.google.com"), color: "#4285F4", initials: "G" },
-  github_copilot: { logoUrl: faviconUrl("github.com"), color: "#24292F", initials: "GH" },
-  groq: { logoUrl: faviconUrl("groq.com"), color: "#F55036", initials: "GQ" },
-  huggingface: { logoUrl: faviconUrl("huggingface.co"), color: "#FF9D00", initials: "HF" },
-  lm_studio: { logoUrl: faviconUrl("lmstudio.ai"), color: "#111827", initials: "LM" },
-  longcat: { logoUrl: faviconUrl("longcat.chat"), color: "#111827", initials: "LC" },
-  minimax: { logoUrl: faviconUrl("minimax.io"), color: "#111827", initials: "MM" },
-  mistral: { logoUrl: faviconUrl("mistral.ai"), color: "#FA520F", initials: "M" },
-  moonshot: { logoUrl: faviconUrl("moonshot.ai"), color: "#111827", initials: "MS" },
-  novita: { logoUrl: faviconUrl("novita.ai"), color: "#7C3AED", initials: "N" },
-  nvidia: { logoUrl: faviconUrl("nvidia.com"), color: "#76B900", initials: "NV" },
-  ollama: { logoUrl: faviconUrl("ollama.com"), color: "#111827", initials: "O" },
-  openai: { logoUrl: faviconUrl("openai.com"), color: "#111827", initials: "AI" },
-  openrouter: { logoUrl: faviconUrl("openrouter.ai"), color: "#111827", initials: "OR" },
-  ovms: { logoUrl: faviconUrl("openvino.ai"), color: "#0071C5", initials: "OV" },
-  qianfan: { logoUrl: faviconUrl("cloud.baidu.com"), color: "#2932E1", initials: "QF" },
-  siliconflow: { logoUrl: faviconUrl("siliconflow.cn"), color: "#111827", initials: "SF" },
-  skywork: { logoUrl: faviconUrl("skywork.ai"), color: "#5B5BF6", initials: "SW" },
-  stepfun: { logoUrl: faviconUrl("stepfun.com"), color: "#2F6BFF", initials: "SF" },
-  volcengine: { logoUrl: faviconUrl("volcengine.com"), color: "#1664FF", initials: "VE" },
-  vllm: { logoUrl: faviconUrl("vllm.ai"), color: "#2563EB", initials: "VL" },
-  xiaomi_mimo: { logoUrl: faviconUrl("xiaomimimo.com"), color: "#FF6900", initials: "MI" },
-  zhipu: { logoUrl: faviconUrl("bigmodel.cn"), color: "#155EEF", initials: "Z" },
-};
-
-function providerBrand(provider: string): ProviderBrand | null {
-  const key = PROVIDER_BRAND_ALIASES[provider] ?? provider;
-  return PROVIDER_BRANDS[key] ?? null;
+  const provider = options.draftProvider ?? preset.provider;
+  if (provider === "auto") {
+    return settings.agent.resolved_provider || settings.agent.provider || preset.provider;
+  }
+  return provider;
 }
 
 const PROVIDER_ICONS: Record<string, LucideIcon> = {
@@ -2697,6 +4028,14 @@ const PROVIDER_ICONS: Record<string, LucideIcon> = {
   ant_ling: Sparkles,
   azure_openai: Cloud,
   bedrock: Database,
+  brave: Search,
+  duckduckgo: Search,
+  exa: Search,
+  jina: Search,
+  kagi: Search,
+  olostep: Search,
+  searxng: Search,
+  tavily: Search,
   vllm: Cpu,
   ollama: Cpu,
   lm_studio: Cpu,
@@ -2712,10 +4051,14 @@ function ProviderIcon({
   provider: string;
   showBrandLogos: boolean;
 }) {
-  const [failed, setFailed] = useState(false);
+  const [logoIndex, setLogoIndex] = useState(0);
   const brand = providerBrand(provider);
   const Icon = PROVIDER_ICONS[provider] ?? Hexagon;
-  if (showBrandLogos && brand?.logoUrl && !failed) {
+  const logoUrl = brand?.logoUrls[logoIndex];
+
+  useEffect(() => setLogoIndex(0), [provider]);
+
+  if (showBrandLogos && logoUrl) {
     return (
       <span
         data-testid={`provider-logo-${provider}`}
@@ -2723,10 +4066,10 @@ function ProviderIcon({
         style={{ boxShadow: `inset 0 0 0 1px ${brand.color}22` }}
       >
         <img
-          src={brand.logoUrl}
+          src={logoUrl}
           alt=""
           className="h-6 w-6 object-contain"
-          onError={() => setFailed(true)}
+          onError={() => setLogoIndex((index) => index + 1)}
         />
       </span>
     );
@@ -2750,17 +4093,104 @@ function ProviderIcon({
   );
 }
 
+function NanobotBrandLogo({
+  size = "sm",
+  testId,
+}: {
+  size?: "sm" | "lg";
+  testId?: string;
+}) {
+  return (
+    <span
+      data-testid={testId}
+      className={cn(
+        "grid shrink-0 place-items-center overflow-hidden border border-border/45 bg-background shadow-[inset_0_0_0_1px_rgba(0,0,0,0.025)]",
+        size === "lg" ? "h-12 w-12 rounded-[16px]" : "h-9 w-9 rounded-[12px]",
+      )}
+      aria-hidden
+    >
+      <img
+        src={NANOBOT_ICON_SRC}
+        alt=""
+        className={cn("select-none object-contain", size === "lg" ? "h-10 w-10" : "h-7 w-7")}
+        draggable={false}
+      />
+    </span>
+  );
+}
+
+function OverviewRowIcon({
+  icon: Icon,
+}: {
+  icon: LucideIcon;
+}) {
+  return (
+    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-[12px] bg-muted text-foreground/82 transition-colors group-hover:bg-muted/80 dark:bg-muted/70">
+      <Icon className="h-4 w-4" aria-hidden />
+    </span>
+  );
+}
+
+function OverviewValueLogo({
+  provider,
+  showBrandLogos,
+}: {
+  provider: string | null | undefined;
+  showBrandLogos: boolean;
+}) {
+  const [logoIndex, setLogoIndex] = useState(0);
+  const brand = provider ? providerBrand(provider) : null;
+  const logoUrl = brand?.logoUrls[logoIndex];
+
+  useEffect(() => setLogoIndex(0), [provider]);
+
+  if (!provider || !showBrandLogos || !brand) return null;
+
+  if (logoUrl) {
+    return (
+      <span
+        data-testid={`overview-logo-${provider}`}
+        className="grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-md border border-border/35 bg-background shadow-[inset_0_0_0_1px_rgba(0,0,0,0.02)]"
+        style={{ boxShadow: `inset 0 0 0 1px ${brand.color}22` }}
+        aria-hidden
+      >
+        <img
+          src={logoUrl}
+          alt=""
+          className="h-3.5 w-3.5 object-contain"
+          onError={() => setLogoIndex((index) => index + 1)}
+        />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      data-testid={`overview-logo-fallback-${provider}`}
+      className="grid h-5 w-5 shrink-0 place-items-center rounded-md text-[7.5px] font-semibold text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.18)]"
+      style={{ backgroundColor: brand.color }}
+      aria-hidden
+    >
+      {brand.initials}
+    </span>
+  );
+}
+
 function OverviewListRow({
   icon: Icon,
+  valueLogoProvider,
   title,
   value,
   caption,
+  showBrandLogos = false,
   onClick,
 }: {
   icon: LucideIcon;
+  valueLogoProvider?: string | null;
   title: string;
   value: string;
   caption: string;
+  showBrandLogos?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -2769,14 +4199,13 @@ function OverviewListRow({
       onClick={onClick}
       className="group flex min-h-[68px] w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-muted/30 sm:px-5"
     >
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-[12px] bg-muted text-foreground/82 transition-colors group-hover:bg-muted/80 dark:bg-muted/70">
-        <Icon className="h-4 w-4" aria-hidden />
-      </span>
+      <OverviewRowIcon icon={Icon} />
       <span className="min-w-0 flex-1">
         <span className="block text-[14px] font-medium leading-5 text-foreground">{title}</span>
         <span className="mt-0.5 block truncate text-[12px] leading-5 text-muted-foreground">{caption}</span>
       </span>
       <span className="ml-auto flex min-w-0 max-w-[48%] items-center gap-2">
+        <OverviewValueLogo provider={valueLogoProvider} showBrandLogos={showBrandLogos} />
         <span className="truncate text-right text-[13px] leading-5 text-muted-foreground">
           {value}
         </span>
@@ -2836,6 +4265,143 @@ function ReadOnlyRow({ title, value }: { title: string; value: string }) {
         {value}
       </span>
     </SettingsRow>
+  );
+}
+
+function ModelPresetPicker({
+  presets,
+  value,
+  settings,
+  draftModel,
+  draftProvider,
+  showProviderLogos,
+  onChange,
+  onCreateConfiguration,
+}: {
+  presets: SettingsPayload["model_presets"];
+  value: string;
+  settings: SettingsPayload;
+  draftModel: string;
+  draftProvider: string;
+  showProviderLogos: boolean;
+  onChange: (preset: string) => void;
+  onCreateConfiguration: () => void;
+}) {
+  const { t } = useTranslation();
+  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
+  const selectedPreset = presets.find((preset) => preset.name === value) ?? presets[0] ?? null;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={!presets.length}>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!presets.length}
+          className={cn(
+            "h-12 w-[min(430px,72vw)] justify-between rounded-full border-input bg-background px-3.5 text-[13px] font-normal shadow-none",
+            "hover:bg-accent/55 focus-visible:ring-2 focus-visible:ring-ring",
+          )}
+        >
+          {selectedPreset ? (
+            <ModelPresetOptionContent
+              preset={selectedPreset}
+              settings={settings}
+              draftModel={draftModel}
+              draftProvider={draftProvider}
+              showProviderLogos={showProviderLogos}
+              compact
+            />
+          ) : (
+            <span className="truncate text-muted-foreground">
+              {tx("settings.models.selectModel", "Select model")}
+            </span>
+          )}
+          <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="max-h-[20rem] w-[430px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-[18px] border-border/65 bg-popover p-1.5 text-popover-foreground shadow-[0_18px_55px_rgba(15,23,42,0.18)] dark:border-white/10 dark:shadow-[0_22px_55px_rgba(0,0,0,0.45)]"
+      >
+        {presets.map((preset) => {
+          const selected = preset.name === value;
+          return (
+            <DropdownMenuItem
+              key={preset.name}
+              onSelect={() => onChange(preset.name)}
+              className={cn(
+                "flex cursor-default items-center justify-between gap-3 rounded-[12px] px-2.5 py-2 text-[13px]",
+                "focus:bg-muted/85 focus:text-foreground",
+                selected && "bg-muted/80 text-foreground focus:bg-muted",
+              )}
+            >
+              <ModelPresetOptionContent
+                preset={preset}
+                settings={settings}
+                draftModel={draftModel}
+                draftProvider={draftProvider}
+                showProviderLogos={showProviderLogos}
+              />
+              {selected ? <Check className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+            </DropdownMenuItem>
+          );
+        })}
+        <div className="mt-1 border-t border-border/55 pt-1">
+          <DropdownMenuItem
+            onSelect={onCreateConfiguration}
+            className={cn(
+              "flex cursor-default items-center gap-2 rounded-[12px] px-2.5 py-2 text-[13px] font-medium",
+              "text-foreground focus:bg-muted/85 focus:text-foreground",
+            )}
+          >
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
+              <Plus className="h-3.5 w-3.5" aria-hidden />
+            </span>
+            <span>{tx("settings.models.addConfiguration", "Add configuration")}</span>
+          </DropdownMenuItem>
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ModelPresetOptionContent({
+  preset,
+  settings,
+  draftModel,
+  draftProvider,
+  showProviderLogos,
+  compact = false,
+}: {
+  preset: SettingsPayload["model_presets"][number];
+  settings: SettingsPayload;
+  draftModel: string;
+  draftProvider: string;
+  showProviderLogos: boolean;
+  compact?: boolean;
+}) {
+  const provider = modelPresetProviderKey(preset, settings, {
+    draftProvider: preset.is_default ? draftProvider : undefined,
+  });
+  const model = preset.is_default ? draftModel : preset.model;
+  const providerName = providerDisplayLabel(settings.providers, provider);
+  return (
+    <span className="flex min-w-0 items-center gap-2.5">
+      <ProviderPickerIcon provider={provider} showBrandLogos={showProviderLogos} />
+      <span className="min-w-0 text-left leading-tight">
+        <span className="block truncate font-medium text-foreground">{model || preset.label}</span>
+        <span
+          className={cn(
+            "mt-0.5 block truncate text-muted-foreground",
+            compact ? "text-[11.5px]" : "text-[12px]",
+          )}
+        >
+          {providerName}
+          {preset.label ? ` · ${preset.label}` : ""}
+        </span>
+      </span>
+    </span>
   );
 }
 
@@ -3040,24 +4606,38 @@ function SegmentedControl({
 function ToggleButton({
   checked,
   onChange,
+  ariaLabel,
   label,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
+  ariaLabel?: string;
   label: string;
 }) {
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel ?? label}
       onClick={() => onChange(!checked)}
       className={cn(
-        "inline-flex h-8 min-w-[64px] items-center justify-center rounded-full px-3 text-[12px] font-medium transition-colors",
+        "relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full p-[2px]",
+        "transition-colors duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
         checked
-          ? "bg-primary text-primary-foreground"
-          : "bg-muted text-muted-foreground hover:text-foreground",
+          ? "bg-[#2997FF] shadow-[inset_0_0_0_1px_rgba(0,0,0,0.035)]"
+          : "bg-muted shadow-[inset_0_0_0_1px_rgba(0,0,0,0.035)] hover:bg-muted/80",
       )}
     >
-      {label}
+      <span
+        aria-hidden
+        className={cn(
+          "h-[18px] w-[18px] rounded-full bg-background shadow-[0_1px_2px_rgba(0,0,0,0.18),0_2px_7px_rgba(0,0,0,0.11)]",
+          "transition-transform duration-200 ease-out",
+          checked ? "translate-x-[16px]" : "translate-x-0",
+        )}
+      />
+      <span className="sr-only">{label}</span>
     </button>
   );
 }

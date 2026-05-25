@@ -53,6 +53,8 @@ export interface UIMessage {
   media?: UIMediaAttachment[];
   /** App-specific CLI adapters explicitly attached to this user turn. */
   cliApps?: UICliAppAttachment[];
+  /** Settings-managed MCP presets explicitly attached to this user turn. */
+  mcpPresets?: UIMcpPresetAttachment[];
   /** Assistant turn: accumulated model reasoning / thinking text. Built up
    * incrementally from ``reasoning_delta`` frames; finalized when
    * ``reasoning_end`` arrives. */
@@ -69,6 +71,17 @@ export interface UICliAppAttachment {
   display_name?: string;
   category?: string;
   entry_point?: string;
+  logo_url?: string | null;
+  brand_color?: string | null;
+}
+
+export interface UIMcpPresetAttachment {
+  name: string;
+  display_name?: string;
+  category?: string;
+  transport?: string;
+  status?: string;
+  configured?: boolean;
   logo_url?: string | null;
   brand_color?: string | null;
 }
@@ -193,6 +206,7 @@ export interface SettingsPayload {
     api_key_hint?: string | null;
     api_base?: string | null;
     default_api_base?: string | null;
+    api_type?: "auto" | "chat_completions" | "responses";
   }>;
   web_search: {
     provider: string;
@@ -266,6 +280,59 @@ export interface SettingsPayload {
   restart_required_sections?: Array<"runtime" | "web" | "image">;
 }
 
+export interface AppPackageRef {
+  manager: string;
+  name?: string;
+}
+
+export interface AppCapability {
+  type: "cli" | "mcp" | "skill" | string;
+  entry_point?: string;
+  package?: AppPackageRef;
+  path?: string;
+  transport?: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+  fields?: Array<{
+    name: string;
+    target?: string;
+    required?: boolean;
+    secret?: boolean;
+    env_var?: string | null;
+  }>;
+}
+
+export interface AppPlan {
+  supported: boolean;
+  strategy?: string;
+  managed_paths?: string[];
+  verification?: string[];
+}
+
+export interface AppTrust {
+  registry: string;
+  level: string;
+  review_status: string;
+}
+
+export interface AppManifest {
+  schema: "agent-app.v1" | string;
+  id: string;
+  display_name: string;
+  version?: string;
+  description: string;
+  category: string;
+  source: string;
+  logo_url?: string | null;
+  brand_color?: string | null;
+  docs_url?: string | null;
+  capabilities: AppCapability[];
+  install: AppPlan;
+  remove: AppPlan;
+  trust: AppTrust;
+}
+
 export interface CliAppInfo {
   name: string;
   display_name: string;
@@ -281,6 +348,7 @@ export interface CliAppInfo {
   logo_url?: string | null;
   brand_color?: string | null;
   skill_installed: boolean;
+  manifest?: AppManifest;
 }
 
 export interface CliAppsPayload {
@@ -290,7 +358,81 @@ export interface CliAppsPayload {
   last_action?: {
     ok: boolean;
     message: string;
+    installed?: boolean;
+    removed?: boolean;
     output?: string | null;
+    still_available?: boolean;
+    verification?: string[];
+    verification_failed?: string[];
+  };
+}
+
+export interface McpPresetField {
+  name: string;
+  label: string;
+  secret: boolean;
+  required: boolean;
+  configured: boolean;
+  placeholder?: string;
+  env_var?: string | null;
+}
+
+export interface McpPresetInfo {
+  name: string;
+  display_name: string;
+  category: string;
+  description: string;
+  docs_url: string;
+  transport: "stdio" | "streamableHttp" | "sse" | "oauth" | string;
+  requires: string;
+  note: string;
+  install_supported: boolean;
+  installed: boolean;
+  configured: boolean;
+  available: boolean;
+  status: "not_installed" | "configured" | "missing_credentials" | "missing_dependency" | "coming_soon" | string;
+  logo_url?: string | null;
+  brand_color?: string | null;
+  required_fields: McpPresetField[];
+  connection_summary: string;
+  tool_count?: number;
+  tool_names?: string[];
+  checked_at?: string | null;
+  error?: string | null;
+  enabled_tools?: string[];
+  source?: "preset" | "custom" | string;
+  manifest?: AppManifest;
+}
+
+export interface McpPresetsPayload {
+  presets: McpPresetInfo[];
+  installed_count: number;
+  requires_restart?: boolean;
+  hot_reload?: {
+    ok: boolean;
+    message: string;
+    added?: string[];
+    changed?: string[];
+    removed?: string[];
+    retried?: string[];
+    connected?: string[];
+    configured?: string[];
+    failed?: string[];
+    tools_removed?: number;
+    requires_restart?: boolean;
+  };
+  last_action?: {
+    ok: boolean;
+    message: string;
+    installed?: boolean;
+    removed?: boolean;
+    managed_paths_removed?: string[];
+    verification?: string[];
+    verification_failed?: string[];
+    tool_count?: number;
+    tool_names?: string[];
+    checked_at?: string | null;
+    error?: string | null;
   };
 }
 
@@ -304,10 +446,18 @@ export interface SettingsUpdate {
   toolHintMaxLength?: number;
 }
 
+export interface ModelConfigurationCreate {
+  name?: string;
+  label: string;
+  provider: string;
+  model: string;
+}
+
 export interface ProviderSettingsUpdate {
   provider: string;
   apiKey?: string;
   apiBase?: string;
+  apiType?: "auto" | "chat_completions" | "responses";
 }
 
 export interface WebSearchSettingsUpdate {
@@ -378,6 +528,7 @@ export type InboundEvent =
       event: "stream_end";
       chat_id: string;
       stream_id?: string;
+      text?: string;
     }
   | {
       event: "reasoning_delta";
@@ -445,6 +596,17 @@ export interface OutboundCliAppMention {
   brand_color?: string | null;
 }
 
+export interface OutboundMcpPresetMention {
+  name: string;
+  display_name?: string;
+  category?: string;
+  transport?: string;
+  status?: string;
+  configured?: boolean;
+  logo_url?: string | null;
+  brand_color?: string | null;
+}
+
 /** Response shape for ``GET .../webui-thread`` (server-built transcript replay). */
 export interface WebuiThreadPersistedPayload {
   schemaVersion: number;
@@ -463,6 +625,7 @@ export type Outbound =
       media?: OutboundMedia[];
       image_generation?: OutboundImageGeneration;
       cli_apps?: OutboundCliAppMention[];
+      mcp_presets?: OutboundMcpPresetMention[];
       /** Marks messages sent by the embedded WebUI, without changing the
        * generic websocket protocol for other clients. */
       webui?: true;

@@ -13,6 +13,100 @@ const attachSpy = vi.fn();
 const runStatusHandlers = new Set<(chatId: string, startedAt: number | null) => void>();
 let mockSessions: ChatSummary[] = [];
 
+function jsonResponse(body: unknown): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => body,
+  } as Response;
+}
+
+function baseSettingsPayload() {
+  return {
+    agent: {
+      model: "openai/gpt-4o",
+      provider: "auto",
+      resolved_provider: "openai",
+      has_api_key: true,
+      model_preset: "default",
+      max_tokens: 8192,
+      context_window_tokens: 65536,
+      temperature: 0.1,
+      reasoning_effort: null,
+      timezone: "UTC",
+      bot_name: "nanobot",
+      bot_icon: "nb",
+      tool_hint_max_length: 40,
+    },
+    model_presets: [{
+      name: "default",
+      label: "Default",
+      active: true,
+      is_default: true,
+      model: "openai/gpt-4o",
+      provider: "auto",
+      max_tokens: 8192,
+      context_window_tokens: 65536,
+      temperature: 0.1,
+      reasoning_effort: null,
+    }],
+    providers: [],
+    web_search: {
+      provider: "duckduckgo",
+      api_key_hint: null,
+      base_url: null,
+      max_results: 5,
+      timeout: 30,
+      providers: [{ name: "duckduckgo", label: "DuckDuckGo", credential: "none" }],
+    },
+    web: {
+      enable: true,
+      proxy: null,
+      user_agent: null,
+      search: { max_results: 5, timeout: 30 },
+      fetch: { use_jina_reader: true },
+    },
+    image_generation: {
+      enabled: false,
+      provider: "openrouter",
+      provider_configured: false,
+      model: "openai/gpt-5.4-image-2",
+      default_aspect_ratio: "1:1",
+      default_image_size: "1K",
+      max_images_per_turn: 4,
+      save_dir: "generated",
+      providers: [],
+    },
+    runtime: {
+      config_path: "/tmp/config.json",
+      workspace_path: "/tmp/workspace",
+      gateway_host: "127.0.0.1",
+      gateway_port: 18790,
+      heartbeat: {
+        enabled: true,
+        interval_s: 1800,
+        keep_recent_messages: 8,
+      },
+      dream: {
+        schedule: "every 2h",
+        max_batch_size: 20,
+        max_iterations: 15,
+        annotate_line_ages: true,
+      },
+      unified_session: false,
+    },
+    advanced: {
+      restrict_to_workspace: false,
+      ssrf_whitelist_count: 0,
+      mcp_server_count: 0,
+      exec_enabled: true,
+      exec_sandbox: null,
+      exec_path_append_set: false,
+    },
+    requires_restart: false,
+  };
+}
+
 vi.mock("@/hooks/useSessions", async (importOriginal) => {
   const React = await import("react");
   const actual = await importOriginal<typeof import("@/hooks/useSessions")>();
@@ -709,10 +803,19 @@ describe("App layout", () => {
 
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
     const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    const searchButton = within(sidebar).getByRole("button", { name: "Search" });
+    const appsButton = within(sidebar).getByRole("button", { name: "Apps" });
+    expect(searchButton.compareDocumentPosition(appsButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(within(sidebar).getByRole("button", { name: "Settings" }));
 
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
     expect(document.title).toBe("Settings · nanobot");
+    expect(screen.getByTestId("overview-nanobot-logo")).toBeInTheDocument();
+    expect(screen.getByTestId("overview-logo-openai")).toBeInTheDocument();
+    expect(screen.getByTestId("overview-logo-brave")).toBeInTheDocument();
+    expect(screen.getByTestId("overview-logo-openrouter")).toBeInTheDocument();
+    expect(screen.queryByTestId("overview-logo-nanobot-gateway")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("overview-logo-nanobot-workspace")).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Sidebar navigation" })).not.toBeInTheDocument();
     const settingsNav = screen.getByRole("navigation", { name: "Settings sections" });
     expect(settingsNav.className).toContain("overflow-x-auto");
@@ -722,23 +825,42 @@ describe("App layout", () => {
       "page",
     );
     expect(within(settingsNav).getByRole("button", { name: "Models" })).toBeInTheDocument();
-    expect(within(settingsNav).getByRole("button", { name: "Providers" })).toBeInTheDocument();
+    expect(within(settingsNav).queryByRole("button", { name: "Providers" })).not.toBeInTheDocument();
     expect(within(settingsNav).getByRole("button", { name: "Image" })).toBeInTheDocument();
     expect(within(settingsNav).getByRole("button", { name: "Web" })).toBeInTheDocument();
+    expect(within(settingsNav).getByRole("button", { name: "Apps" })).toBeInTheDocument();
     expect(within(settingsNav).getByRole("button", { name: "Advanced" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
     fireEvent.click(within(settingsNav).getByRole("button", { name: "Appearance" }));
     expect(screen.getByText("Brand logos")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Brand logos" })).toBeInTheDocument();
     fireEvent.click(within(settingsNav).getByRole("button", { name: "Models" }));
-    expect(screen.getByText("AI")).toBeInTheDocument();
+    expect(screen.queryByText("AI")).not.toBeInTheDocument();
+    expect(screen.getByText("Current model")).toBeInTheDocument();
+    expect(screen.queryByText("Presets")).not.toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole("button", { name: /openai\/gpt-4o/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add configuration" }));
+    const modelDialog = screen.getByRole("dialog", { name: "New model configuration" });
+    expect(within(modelDialog).getByText("Save a provider and model as a one-click option.")).toBeInTheDocument();
+    fireEvent.change(within(modelDialog).getByPlaceholderText("Fast writing"), {
+      target: { value: "Fast writing" },
+    });
+    fireEvent.change(within(modelDialog).getByPlaceholderText("openai/gpt-4.1"), {
+      target: { value: "openai/gpt-4.1-mini" },
+    });
+    expect(within(modelDialog).getByRole("button", { name: /OpenAI/ })).toBeInTheDocument();
+    expect(within(modelDialog).getByRole("button", { name: "Save" })).toBeEnabled();
+    fireEvent.click(within(modelDialog).getByRole("button", { name: "Cancel" }));
     const modelInput = screen.getByDisplayValue("openai/gpt-4o");
     expect(modelInput).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole("button", { name: /Auto/ }));
+    expect(screen.getAllByTestId("provider-picker-logo-openai").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Auto/ }));
     fireEvent.change(modelInput, { target: { value: "openai/gpt-4o-mini" } });
     expect(screen.getByText("Unsaved changes.").parentElement?.className).toContain(
       "text-blue-600",
     );
     fireEvent.change(modelInput, { target: { value: "openai/gpt-4o" } });
-    fireEvent.click(within(settingsNav).getByRole("button", { name: "Providers" }));
     expect(screen.getByText("OpenRouter")).toBeInTheDocument();
     expect(screen.getByText("Ant Ling")).toBeInTheDocument();
     expect(screen.getByTestId("provider-logo-openai")).toBeInTheDocument();
@@ -757,10 +879,11 @@ describe("App layout", () => {
     expect(screen.getByDisplayValue("https://api.ant-ling.com/v1")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Atomic Chat"));
     expect(screen.getByDisplayValue("http://localhost:1337/v1")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save provider" })).toBeEnabled();
 
     fireEvent.click(within(settingsNav).getByRole("button", { name: "Image" }));
     expect(screen.getByRole("heading", { name: "Image" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Image generation" })).toBeInTheDocument();
     expect(screen.getByText("Provider status")).toBeInTheDocument();
     expect(screen.getByDisplayValue("openai/gpt-5.4-image-2")).toBeInTheDocument();
     expect(screen.getByText("Save directory")).toBeInTheDocument();
@@ -768,7 +891,9 @@ describe("App layout", () => {
 
     fireEvent.click(within(settingsNav).getByRole("button", { name: "Web" }));
     expect(screen.getByText("Search provider")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Jina reader" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Brave Search/ })).toBeInTheDocument();
+    expect(screen.getByTestId("provider-picker-logo-brave")).toBeInTheDocument();
     expect(screen.getByText("BSAo••••ew20")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.change(screen.getByPlaceholderText("Leave blank to keep the current key"), {
@@ -783,7 +908,52 @@ describe("App layout", () => {
 
     fireEvent.click(within(settingsNav).getByRole("button", { name: "Runtime" }));
     expect(screen.getByText("Bot name")).toBeInTheDocument();
+    expect(screen.queryByText("Tool hint length")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "UTC" }));
+    expect(screen.getByPlaceholderText("Search timezone")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("Search timezone"), {
+      target: { value: "Shanghai" },
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: /Asia\/Shanghai/ }));
+    expect(screen.getByRole("button", { name: "Asia/Shanghai" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("opens Apps from the main sidebar without replacing the sidebar", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const href = String(input);
+        if (href === "/api/settings") {
+          return jsonResponse(baseSettingsPayload());
+        }
+        if (href === "/api/settings/cli-apps") {
+          return jsonResponse({ apps: [], installed_count: 0, catalog_updated_at: "2026-04-18" });
+        }
+        if (href === "/api/settings/mcp-presets") {
+          return jsonResponse({ presets: [], installed_count: 0 });
+        }
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }),
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    const appsButton = within(sidebar).getByRole("button", { name: "Apps" });
+
+    fireEvent.click(appsButton);
+
+    expect(await screen.findByRole("heading", { name: "Apps" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Sidebar navigation" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Settings sections" })).not.toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: "Apps" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(document.title).toBe("Apps · nanobot");
   });
 
   it("returns from settings to the blank start page when no session was active", async () => {
@@ -969,6 +1139,7 @@ describe("App layout", () => {
     expect(dialog).toHaveClass("origin-center");
     expect(dialog.className).not.toContain("translate-x");
     expect(dialog.className).not.toContain("translate-y");
+    expect(dialog.querySelector("kbd")).toBeNull();
     expect(within(dialog).getByText("Q2 roadmap")).toBeInTheDocument();
     expect(within(dialog).getByText("Travel ideas")).toBeInTheDocument();
     expect(within(dialog).queryByText("websocket")).not.toBeInTheDocument();

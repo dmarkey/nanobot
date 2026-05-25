@@ -104,6 +104,7 @@ FallbackCandidate = str | InlineFallbackConfig
 class ModelPresetConfig(Base):
     """A named set of model + generation parameters for quick switching."""
 
+    label: str | None = None
     model: str
     provider: str = "auto"
     max_tokens: int = 8192
@@ -183,8 +184,9 @@ class ProviderConfig(Base):
 
     api_key: str | None = None
     api_base: str | None = None
+    api_type: Literal["auto", "chat_completions", "responses"] = "auto"  # Request API surface
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
-    extra_body: dict[str, Any] | None = None  # Extra fields merged into every request body
+    extra_body: dict[str, Any] | None = None  # Extra provider request fields; shape depends on provider/API surface
 
 
 class BedrockProviderConfig(ProviderConfig):
@@ -235,6 +237,16 @@ class ProvidersConfig(Base):
     qianfan: ProviderConfig = Field(default_factory=ProviderConfig)  # Qianfan (百度千帆)
     nvidia: ProviderConfig = Field(default_factory=ProviderConfig)  # NVIDIA NIM (nvapi- keys)
 
+    @model_validator(mode="after")
+    def _validate_api_type_scope(self) -> "ProvidersConfig":
+        for name in self.__class__.model_fields:
+            if name == "openai":
+                continue
+            provider = getattr(self, name, None)
+            if isinstance(provider, ProviderConfig) and provider.api_type != "auto":
+                raise ValueError("providers.<name>.api_type is only supported for providers.openai")
+        return self
+
 
 class HeartbeatConfig(Base):
     """Heartbeat service configuration."""
@@ -270,6 +282,7 @@ class MCPServerConfig(Base):
     command: str = ""  # Stdio: command to run (e.g. "npx")
     args: list[str] = Field(default_factory=list)  # Stdio: command arguments
     env: dict[str, str] = Field(default_factory=dict)  # Stdio: extra env vars
+    cwd: str = ""  # Stdio: working directory for MCP server runtime artifacts
     url: str = ""  # HTTP/SSE: endpoint URL
     headers: dict[str, str] = Field(default_factory=dict)  # HTTP/SSE: custom headers
     tool_timeout: int = 30  # seconds before a tool call is cancelled

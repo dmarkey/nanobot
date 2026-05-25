@@ -11,12 +11,14 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from nanobot.apps.protocol import app_manifest, compact_dict
 from nanobot.config.paths import get_runtime_subdir
 
 CLI_ANYTHING_REGISTRY_URL = "https://hkuds.github.io/CLI-Anything/registry.json"
@@ -25,9 +27,43 @@ CLI_ANYTHING_RAW_BASE = "https://raw.githubusercontent.com/HKUDS/CLI-Anything/ma
 CLI_ANYTHING_RAW_SKILLS_BASE = f"{CLI_ANYTHING_RAW_BASE}/skills/"
 
 _MAX_TOOL_OUTPUT_CHARS = 12_000
+_MAX_ARTIFACT_SCAN_PATHS = 4_000
+_MAX_ARTIFACT_REPORT = 12
 _SAFE_NAME_RE = re.compile(r"[^a-z0-9_-]+")
 _MENTION_RE = re.compile(r"(^|[\s([{])@([a-z0-9_-]+)\b", re.IGNORECASE)
 _SHELL_META_CHARS = ("|", "&&", "||", ";", "$(", "`", ">", "<")
+_ARTIFACT_EXTENSIONS = frozenset({
+    ".csv",
+    ".drawio",
+    ".gif",
+    ".html",
+    ".jpeg",
+    ".jpg",
+    ".json",
+    ".md",
+    ".pdf",
+    ".png",
+    ".svg",
+    ".txt",
+    ".vsdx",
+    ".webp",
+    ".xml",
+})
+_INLINE_ARTIFACT_EXTENSIONS = frozenset({".gif", ".jpeg", ".jpg", ".png", ".webp"})
+_ARTIFACT_IGNORE_DIRS = frozenset({
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nanobot",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+})
 
 
 class CliAppError(ValueError):
@@ -105,7 +141,7 @@ _BRANDS: dict[str, tuple[str, str]] = {
 
 _BRAND_DOMAINS: dict[str, tuple[str, str]] = {
     "3mf": ("3mf.io", "#00A1DE"),
-    "anygen": ("anygen.com", "#111827"),
+    "anygen": ("anygen.io", "#111827"),
     "clibrowser": ("github.com/allthingssecurity/clibrowser", "#24292F"),
     "cloudanalyzer": ("github.com/rsasaki0109/CloudAnalyzer", "#2563EB"),
     "cloudcompare": ("cloudcompare.org", "#4D83C3"),
@@ -208,6 +244,29 @@ def _pip_uninstall_args_from_command(command: str) -> list[str] | None:
     if not packages or any(arg.startswith("-") for arg in packages):
         return None
     return packages
+
+
+def _console_script_distribution(entry_point: str) -> str | None:
+    if not entry_point:
+        return None
+    try:
+        distributions = importlib_metadata.distributions()
+    except Exception:
+        return None
+    for distribution in distributions:
+        try:
+            entry_points = distribution.entry_points
+        except Exception:
+            continue
+        for item in entry_points:
+            if item.group != "console_scripts" or item.name != entry_point:
+                continue
+            try:
+                name = distribution.metadata.get("Name")
+            except Exception:
+                name = None
+            return str(name or getattr(distribution, "name", "") or "").strip() or None
+    return None
 
 
 def _brand_key(value: str) -> str:
@@ -506,7 +565,85 @@ class CliAppManager:
             "logo_url": logo_url,
             "brand_color": brand_color,
             "skill_installed": self._skill_path(name).is_file(),
+            "manifest": self._manifest_payload(app, logo_url=logo_url, brand_color=brand_color),
         }
+
+    def _package_ref(self, app: dict[str, Any]) -> dict[str, Any] | None:
+        strategy = self._strategy(app)
+        name = ""
+        if strategy == "pip":
+            try:
+                uninstall = self._pip_uninstall_argv(app)
+            except CliAppError:
+                uninstall = None
+            name = uninstall[-1] if uninstall else ""
+        elif strategy == "npm":
+            name = str(app.get("npm_package") or "").strip()
+        elif strategy in {"brew", "uv"}:
+            try:
+                uninstall = self._argv_for_action(app, "uninstall")
+            except CliAppError:
+                uninstall = None
+            if uninstall:
+                name = uninstall[-1]
+        if not strategy or strategy in {"unsupported", "bundled"}:
+            return None
+        return compact_dict({"manager": strategy, "name": name})
+
+    def _manifest_payload(
+        self,
+        app: dict[str, Any],
+        *,
+        logo_url: str | None,
+        brand_color: str | None,
+    ) -> dict[str, Any]:
+        name = str(app["name"])
+        entry_point = str(app.get("entry_point") or "")
+        strategy = self._strategy(app)
+        skill_path = f"skills/{_safe_skill_name(name)}/SKILL.md"
+        capabilities = [
+            compact_dict({
+                "type": "cli",
+                "entry_point": entry_point,
+                "package": self._package_ref(app),
+            }),
+            {"type": "skill", "path": skill_path},
+        ]
+        install_supported = self._install_supported(app)
+        install = compact_dict({
+            "supported": install_supported,
+            "strategy": strategy,
+            "managed_paths": [skill_path],
+            "verification": ["entry_point_available"] if entry_point else [],
+        })
+        remove = compact_dict({
+            "supported": strategy != "unsupported",
+            "strategy": strategy,
+            "managed_paths": [skill_path],
+            "verification": (
+                ["package_manager_ok", "entry_point_absent", "managed_paths_absent"]
+                if strategy not in {"bundled", "unsupported"}
+                else ["nanobot_state_absent", "managed_paths_absent"]
+            ),
+        })
+        return app_manifest(
+            app_id=name,
+            display_name=str(app.get("display_name") or name),
+            version=str(app.get("version") or ""),
+            description=str(app.get("description") or ""),
+            category=str(app.get("category") or "uncategorized"),
+            source=f"cli-anything:{app.get('_source') or 'harness'}",
+            logo_url=logo_url,
+            brand_color=brand_color,
+            capabilities=capabilities,
+            install=install,
+            remove=remove,
+            trust={
+                "registry": "cli-anything",
+                "level": "catalog",
+                "review_status": "catalog_entry",
+            },
+        )
 
     def payload(self, *, force_refresh: bool = False) -> dict[str, Any]:
         apps, updated = self.catalog(force_refresh=force_refresh)
@@ -547,7 +684,14 @@ class CliAppManager:
             prefix.extend(["--upgrade", "--force-reinstall"])
         return prefix + args
 
-    def _pip_uninstall_argv(self, app: dict[str, Any]) -> list[str]:
+    def _pip_uninstall_argv(
+        self,
+        app: dict[str, Any],
+        installed_entry: dict[str, Any] | None = None,
+    ) -> list[str]:
+        distribution = str((installed_entry or {}).get("pip_distribution") or "").strip()
+        if distribution:
+            return [sys.executable, "-m", "pip", "uninstall", "-y", distribution]
         uninstall_cmd = str(app.get("uninstall_cmd") or "")
         packages = _pip_uninstall_args_from_command(uninstall_cmd)
         if packages:
@@ -585,14 +729,19 @@ class CliAppManager:
             raise CliAppError(f"unsupported {expected} command")
         return argv
 
-    def _argv_for_action(self, app: dict[str, Any], action: str) -> list[str] | None:
+    def _argv_for_action(
+        self,
+        app: dict[str, Any],
+        action: str,
+        installed_entry: dict[str, Any] | None = None,
+    ) -> list[str] | None:
         strategy = self._strategy(app)
         if strategy == "pip":
             if action == "install":
                 return self._pip_install_argv(app)
             if action == "update":
                 return self._pip_install_argv(app, update=True)
-            return self._pip_uninstall_argv(app)
+            return self._pip_uninstall_argv(app, installed_entry=installed_entry)
         if strategy == "npm":
             return self._npm_argv(app, action)
         if strategy == "brew":
@@ -614,13 +763,23 @@ class CliAppManager:
         )
 
     def _installed_entry(self, app: dict[str, Any]) -> dict[str, Any]:
-        return {
+        entry_point = str(app.get("entry_point") or "")
+        strategy = self._strategy(app)
+        entry: dict[str, Any] = {
             "version": app.get("version") or "unknown",
-            "entry_point": app.get("entry_point") or "",
+            "entry_point": entry_point,
             "source": app.get("_source") or "harness",
-            "strategy": self._strategy(app),
+            "strategy": strategy,
             "installed_at": int(_now()),
         }
+        resolved = shutil.which(entry_point) if entry_point else None
+        if resolved:
+            entry["entry_point_path"] = resolved
+        if strategy == "pip":
+            distribution = _console_script_distribution(entry_point)
+            if distribution:
+                entry["pip_distribution"] = distribution
+        return entry
 
     def _fetch_skill_content(self, app: dict[str, Any]) -> str | None:
         skill_md = str(app.get("skill_md") or "").strip()
@@ -696,11 +855,13 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
         if skill_dir.is_dir():
             shutil.rmtree(skill_dir)
 
-    def _record_installed(self, app: dict[str, Any]) -> None:
+    def _record_installed(self, app: dict[str, Any]) -> dict[str, Any]:
         installed = self._load_installed()
-        installed[str(app["name"])] = self._installed_entry(app)
+        entry = self._installed_entry(app)
+        installed[str(app["name"])] = entry
         self._save_installed(installed)
         self.install_skill(app)
+        return entry
 
     def install(self, name: str) -> dict[str, Any]:
         app = self.get_app(name)
@@ -711,7 +872,14 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
             detect_cmd = str(app.get("detect_cmd") or app.get("entry_point") or "")
             if detect_cmd and _command_exists(detect_cmd):
                 self._record_installed(app)
-                return self.payload() | {"last_action": {"ok": True, "message": f"CLI for {app['display_name']} is available."}}
+                return self.payload() | {
+                    "last_action": {
+                        "ok": True,
+                        "message": f"CLI for {app['display_name']} is available.",
+                        "installed": True,
+                        "verification": ["entry_point_available", "state_recorded"],
+                    }
+                }
             note = app.get("install_notes") or f"{app['display_name']} is bundled with its parent app."
             raise CliAppError(str(note))
         argv = self._argv_for_action(app, "install")
@@ -720,7 +888,14 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
         if result.returncode != 0:
             raise CliAppError(_truncate(result.stderr or result.stdout or "install failed"), status=500)
         self._record_installed(app)
-        return self.payload() | {"last_action": {"ok": True, "message": f"Installed CLI for {app['display_name']}."}}
+        return self.payload() | {
+            "last_action": {
+                "ok": True,
+                "message": f"Installed CLI for {app['display_name']}.",
+                "installed": True,
+                "verification": ["package_manager_ok", "state_recorded", "managed_paths_present"],
+            }
+        }
 
     def update(self, name: str) -> dict[str, Any]:
         app = self.get_app(name, force_refresh=True)
@@ -728,30 +903,94 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
             raise CliAppError("CLI app is not installed")
         if self._strategy(app) == "bundled":
             self._record_installed(app)
-            return self.payload() | {"last_action": {"ok": True, "message": f"Checked {app['display_name']}."}}
+            return self.payload() | {
+                "last_action": {
+                    "ok": True,
+                    "message": f"Checked {app['display_name']}.",
+                    "installed": True,
+                    "verification": ["state_recorded"],
+                }
+            }
         argv = self._argv_for_action(app, "update")
         assert argv is not None
         result = self._run_argv(argv, timeout=self.runtime.install_timeout)
         if result.returncode != 0:
             raise CliAppError(_truncate(result.stderr or result.stdout or "update failed"), status=500)
         self._record_installed(app)
-        return self.payload() | {"last_action": {"ok": True, "message": f"Updated CLI for {app['display_name']}."}}
+        return self.payload() | {
+            "last_action": {
+                "ok": True,
+                "message": f"Updated CLI for {app['display_name']}.",
+                "installed": True,
+                "verification": ["package_manager_ok", "state_recorded", "managed_paths_present"],
+            }
+        }
 
     def uninstall(self, name: str) -> dict[str, Any]:
         app = self.get_app(name)
         installed = self._load_installed()
         if str(app["name"]) not in installed:
             raise CliAppError("CLI app is not installed")
-        if self._strategy(app) != "bundled":
-            argv = self._argv_for_action(app, "uninstall")
+        raw_installed_entry = installed.get(str(app["name"]))
+        installed_entry = raw_installed_entry if isinstance(raw_installed_entry, dict) else {}
+        strategy = self._strategy(app)
+        entry_point = str(app.get("entry_point") or "").strip()
+        managed_entry_path = str(installed_entry.get("entry_point_path") or "").strip()
+        if strategy != "bundled":
+            argv = self._argv_for_action(app, "uninstall", installed_entry=installed_entry)
             assert argv is not None
             result = self._run_argv(argv, timeout=self.runtime.install_timeout)
             if result.returncode != 0:
                 raise CliAppError(_truncate(result.stderr or result.stdout or "uninstall failed"), status=500)
+            still_managed = bool(managed_entry_path and Path(managed_entry_path).exists())
+            still_available = bool(entry_point and shutil.which(entry_point))
+            if still_managed or (not managed_entry_path and still_available):
+                reason = (
+                    f"the recorded entry point at {managed_entry_path} still exists"
+                    if still_managed
+                    else f"{entry_point} is still available on PATH"
+                )
+                message = (
+                    f"Uninstall for {app['display_name']} completed, but {reason}, "
+                    "so nanobot kept it installed."
+                )
+                return self.payload() | {
+                    "last_action": {
+                        "ok": False,
+                        "message": message,
+                        "removed": False,
+                        "still_available": True,
+                        "verification_failed": ["entry_point_absent"],
+                    }
+                }
+        else:
+            still_available = bool(entry_point and shutil.which(entry_point))
         installed.pop(str(app["name"]), None)
         self._save_installed(installed)
         self.remove_skill(str(app["name"]))
-        return self.payload() | {"last_action": {"ok": True, "message": f"Uninstalled CLI for {app['display_name']}."}}
+        if strategy == "bundled" and still_available:
+            message = (
+                f"Removed {app['display_name']} from nanobot. {entry_point} "
+                "is still available because it is managed outside nanobot."
+            )
+        elif still_available:
+            message = (
+                f"Uninstalled CLI for {app['display_name']}, but another {entry_point} "
+                "is still available on PATH."
+            )
+        else:
+            message = f"Uninstalled CLI for {app['display_name']}."
+        return self.payload() | {
+            "last_action": {
+                "ok": True,
+                "message": message,
+                "removed": True,
+                "still_available": still_available,
+                "verification": ["state_absent", "managed_paths_absent"]
+                if still_available
+                else ["entry_point_absent", "state_absent", "managed_paths_absent"],
+            }
+        }
 
     def test(self, name: str) -> dict[str, Any]:
         app = self.get_app(name)
@@ -783,6 +1022,87 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
             raise CliAppError("working_dir is outside the configured workspace")
         return cwd
 
+    def _iter_artifact_candidates(self, cwd: Path) -> list[Path]:
+        if not cwd.is_dir():
+            return []
+        out: list[Path] = []
+        stack = [cwd]
+        scanned = 0
+        while stack and scanned < _MAX_ARTIFACT_SCAN_PATHS:
+            directory = stack.pop()
+            try:
+                entries = sorted(directory.iterdir(), key=lambda path: path.name.lower())
+            except OSError:
+                continue
+            for path in entries:
+                if scanned >= _MAX_ARTIFACT_SCAN_PATHS:
+                    break
+                scanned += 1
+                try:
+                    if path.is_dir() and not path.is_symlink():
+                        if path.name not in _ARTIFACT_IGNORE_DIRS:
+                            stack.append(path)
+                        continue
+                    if path.is_file() and path.suffix.lower() in _ARTIFACT_EXTENSIONS:
+                        out.append(path.resolve(strict=False))
+                except OSError:
+                    continue
+        return out
+
+    def _artifact_snapshot(self, cwd: Path) -> dict[Path, tuple[int, int]]:
+        snapshot: dict[Path, tuple[int, int]] = {}
+        for path in self._iter_artifact_candidates(cwd):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            snapshot[path] = (stat.st_mtime_ns, stat.st_size)
+        return snapshot
+
+    def _changed_artifacts(
+        self,
+        cwd: Path,
+        before: dict[Path, tuple[int, int]],
+    ) -> list[Path]:
+        changed: list[tuple[int, Path]] = []
+        for path, stamp in self._artifact_snapshot(cwd).items():
+            if before.get(path) == stamp:
+                continue
+            changed.append((stamp[0], path))
+        changed.sort(key=lambda item: (item[0], item[1].name.lower()))
+        return [path for _, path in changed[-_MAX_ARTIFACT_REPORT:]]
+
+    def _format_artifact_path(self, cwd: Path, path: Path) -> str:
+        try:
+            return path.relative_to(cwd).as_posix()
+        except ValueError:
+            return path.name
+
+    @staticmethod
+    def _format_artifact_size(path: Path) -> str:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return "unknown size"
+        if size < 1024:
+            return f"{size} B"
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size / (1024 * 1024):.1f} MB"
+
+    def _format_artifact_lines(self, cwd: Path, paths: list[Path]) -> list[str]:
+        lines: list[str] = []
+        for path in paths:
+            rel = self._format_artifact_path(cwd, path)
+            ext = path.suffix.lower()
+            kind = (
+                "previewable image"
+                if ext in _INLINE_ARTIFACT_EXTENSIONS
+                else ext.lstrip(".") or "file"
+            )
+            lines.append(f"- {rel} ({kind}, {self._format_artifact_size(path)})")
+        return lines
+
     def run(
         self,
         name: str,
@@ -806,6 +1126,7 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
         if json_output and "--json" not in clean_args:
             clean_args = ["--json", *clean_args]
         effective_timeout = max(1, min(timeout or self.runtime.run_timeout, 600))
+        artifact_snapshot = self._artifact_snapshot(cwd)
         try:
             result = subprocess.run(
                 [resolved, *clean_args],
@@ -825,4 +1146,15 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
             output.append("\nSTDOUT:\n" + result.stdout.rstrip())
         if result.stderr:
             output.append("\nSTDERR:\n" + result.stderr.rstrip())
+        artifacts = self._changed_artifacts(cwd, artifact_snapshot)
+        if artifacts:
+            output.append(
+                "\nArtifacts created or updated:\n"
+                + "\n".join(self._format_artifact_lines(cwd, artifacts))
+            )
+            if any(path.suffix.lower() in _INLINE_ARTIFACT_EXTENSIONS for path in artifacts):
+                output.append(
+                    "\nTo show a preview in WebUI, reference a raster artifact with Markdown "
+                    "using its workspace-relative path, for example `![diagram](diagram.png)`."
+                )
         return _truncate("\n".join(output))
