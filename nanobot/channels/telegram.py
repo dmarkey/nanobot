@@ -521,10 +521,17 @@ class TelegramChannel(BaseChannel):
             try:
                 if self._app.updater.running:
                     await self._app.updater.stop()
-            except RuntimeError:
+            except (RuntimeError, AttributeError):
                 pass  # Already stopped or never started
-            await self._app.stop()
-            await self._app.shutdown()
+            try:
+                if self._app.running:
+                    await self._app.stop()
+            except (RuntimeError, AttributeError):
+                pass  # Already stopped or never started
+            try:
+                await self._app.shutdown()
+            except (RuntimeError, AttributeError):
+                pass  # Already stopped or never started
             self._app = None
 
     @staticmethod
