@@ -17,6 +17,12 @@ from nanobot.agent.tools.file_state import FileStates
 from nanobot.agent.tools.loader import ToolLoader
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.resolve import ResolveToolsTool
+from nanobot.security.workspace_access import (
+    WorkspaceScope,
+    bind_workspace_scope,
+    reset_workspace_scope,
+    workspace_sandbox_status,
+)
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import AgentDefaults, ToolsConfig
@@ -137,6 +143,10 @@ class SubagentManager:
             config=cfg,
             workspace=str(root.resolve()),
             file_state_store=FileStates(),
+            workspace_sandbox=workspace_sandbox_status(
+                restrict_to_workspace=cfg.restrict_to_workspace,
+                workspace=root,
+            ),
         )
         ToolLoader().load(ctx, registry, scope="subagent")
         return registry
@@ -156,6 +166,7 @@ class SubagentManager:
         tool_filter: list[str] | None = None,
         origin_message_id: str | None = None,
         temperature: float | None = None,
+        workspace_scope: WorkspaceScope | None = None,
     ) -> str:
         """Spawn a subagent to execute a task in the background."""
         task_id = str(uuid.uuid4())[:8]
@@ -180,6 +191,7 @@ class SubagentManager:
                 tool_filter=tool_filter,
                 origin_message_id=origin_message_id,
                 temperature=temperature,
+                workspace_scope=workspace_scope,
             )
         )
         self._running_tasks[task_id] = bg_task
@@ -209,6 +221,7 @@ class SubagentManager:
         tool_filter: list[str] | None = None,
         origin_message_id: str | None = None,
         temperature: float | None = None,
+        workspace_scope: WorkspaceScope | None = None,
     ) -> None:
         """Execute the subagent task and announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
@@ -218,12 +231,18 @@ class SubagentManager:
             status.iteration = payload.get("iteration", status.iteration)
 
         try:
-            tools = self._build_tools()
+            root = workspace_scope.project_path if workspace_scope is not None else self.workspace
+            cfg = None
+            if workspace_scope is not None:
+                cfg = self._subagent_tools_config()
+                cfg.restrict_to_workspace = workspace_scope.restrict_to_workspace
+            tools = self._build_tools(workspace=root, tools_config=cfg)
             if tool_filter:
                 tools.apply_inclusion_filter(tool_filter)
             if self._deferred_loading and tools.deferred_count:
                 tools.register(ResolveToolsTool(tools))
             system_prompt = self._build_subagent_prompt(
+                workspace=root,
                 tool_registry=tools if self._deferred_loading else None
             )
             messages: list[dict[str, Any]] = [
@@ -237,21 +256,27 @@ class SubagentManager:
                 if self._llm_wall_timeout_for_session
                 else None
             )
-            result = await self.runner.run(AgentRunSpec(
-                initial_messages=messages,
-                tools=tools,
-                model=self.model,
-                temperature=temperature,
-                max_iterations=self.max_iterations,
-                max_tool_result_chars=self.max_tool_result_chars,
-                hook=_SubagentHook(task_id, status),
-                max_iterations_message="Task completed but no final response was generated.",
-                error_message=None,
-                fail_on_tool_error=True,
-                checkpoint_callback=_on_checkpoint,
-                session_key=sess_key,
-                llm_timeout_s=llm_timeout,
-            ))
+            token = bind_workspace_scope(workspace_scope) if workspace_scope is not None else None
+            try:
+                result = await self.runner.run(AgentRunSpec(
+                    initial_messages=messages,
+                    tools=tools,
+                    model=self.model,
+                    temperature=temperature,
+                    max_iterations=self.max_iterations,
+                    max_tool_result_chars=self.max_tool_result_chars,
+                    hook=_SubagentHook(task_id, status),
+                    max_iterations_message="Task completed but no final response was generated.",
+                    error_message=None,
+                    fail_on_tool_error=True,
+                    checkpoint_callback=_on_checkpoint,
+                    session_key=sess_key,
+                    workspace=root,
+                    llm_timeout_s=llm_timeout,
+                ))
+            finally:
+                if token is not None:
+                    reset_workspace_scope(token)
             status.phase = "done"
             status.stop_reason = result.stop_reason
 
@@ -345,20 +370,21 @@ class SubagentManager:
             lines.append(f"- {result.error}")
         return "\n".join(lines) or (result.error or "Error: subagent execution failed.")
 
-    def _build_subagent_prompt(self, tool_registry: ToolRegistry | None = None) -> str:
+    def _build_subagent_prompt(self, workspace: Path | None = None, tool_registry: ToolRegistry | None = None) -> str:
         """Build a focused system prompt for the subagent."""
         from nanobot.agent.context import ContextBuilder
         from nanobot.agent.skills import SkillsLoader
 
         time_ctx = ContextBuilder._build_runtime_context(None, None)
+        root = workspace or self.workspace
         skills_summary = SkillsLoader(
-            self.workspace,
+            root,
             disabled_skills=self.disabled_skills,
         ).build_skills_summary()
         prompt = render_template(
             "agent/subagent_system.md",
             time_ctx=time_ctx,
-            workspace=str(self.workspace),
+            workspace=str(root),
             skills_summary=skills_summary or "",
         )
         if tool_registry:

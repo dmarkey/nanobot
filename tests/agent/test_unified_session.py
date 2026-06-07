@@ -39,8 +39,7 @@ def _make_loop(tmp_path: Path, unified_session: bool = False) -> AgentLoop:
     provider.get_default_model.return_value = "test-model"
 
     with patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr, \
-         patch("nanobot.agent.loop.Dream"):
+         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr:
         MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
         loop = AgentLoop(
             bus=bus,
@@ -471,6 +470,32 @@ class TestStopCommandWithUnifiedSession:
         result = await cmd_stop(ctx)
 
         # Verify task was cancelled
+        assert task.cancelled() or task.done()
+        assert "Stopped 1 task" in result.content
+
+    @pytest.mark.asyncio
+    async def test_stop_command_uses_effective_key_without_session_override(self, tmp_path: Path):
+        """Priority /stop must cancel the unified session even before dispatch rewrites the message."""
+        from nanobot.agent.loop import UNIFIED_SESSION_KEY
+        from nanobot.command.builtin import cmd_stop
+
+        loop = _make_loop(tmp_path, unified_session=True)
+
+        async def long_running():
+            await asyncio.sleep(10)
+
+        task = asyncio.create_task(long_running())
+        loop._active_tasks[UNIFIED_SESSION_KEY] = [task]
+        msg = InboundMessage(
+            channel="telegram",
+            chat_id="123456",
+            sender_id="user1",
+            content="/stop",
+        )
+        ctx = CommandContext(msg=msg, session=None, key=UNIFIED_SESSION_KEY, raw="/stop", loop=loop)
+
+        result = await cmd_stop(ctx)
+
         assert task.cancelled() or task.done()
         assert "Stopped 1 task" in result.content
 

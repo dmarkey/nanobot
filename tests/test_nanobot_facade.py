@@ -299,3 +299,67 @@ async def test_run_restores_extra_hooks_even_on_populated_iterations(tmp_path):
     bot._loop.process_direct = fake_process_direct
     await bot.run("hello")
     assert bot._loop._extra_hooks == [sentinel_hook]
+
+
+@pytest.mark.asyncio
+async def test_sdk_capture_prefers_run_level_snapshot():
+    from nanobot.agent.hook import AgentHookContext, AgentRunHookContext, SDKCaptureHook
+    from nanobot.providers.base import ToolCallRequest
+
+    hook = SDKCaptureHook()
+    iter_messages = [{"role": "user", "content": "work"}]
+    iter_context = AgentHookContext(iteration=0, messages=iter_messages)
+    iter_context.tool_calls = [
+        ToolCallRequest(id="call_1", name="read_file", arguments={}),
+        ToolCallRequest(id="call_2", name="grep", arguments={}),
+    ]
+    await hook.after_iteration(iter_context)
+
+    final_messages = [
+        {"role": "user", "content": "work"},
+        {"role": "assistant", "content": "done"},
+    ]
+    await hook.after_run(AgentRunHookContext(
+        messages=final_messages,
+        tools_used=["read_file"],
+    ))
+
+    assert hook.tools_used == ["read_file"]
+    assert hook.messages == final_messages
+
+
+@pytest.mark.asyncio
+async def test_aclose_delegates_to_loop_close_mcp(tmp_path):
+    config_path = _write_config(tmp_path)
+    bot = Nanobot.from_config(config_path, workspace=tmp_path)
+    bot._loop.close_mcp = AsyncMock()
+
+    await bot.aclose()
+
+    bot._loop.close_mcp.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_context_manager_calls_aclose_on_exit(tmp_path):
+    config_path = _write_config(tmp_path)
+    bot = Nanobot.from_config(config_path, workspace=tmp_path)
+    bot._loop.close_mcp = AsyncMock()
+
+    async with bot as b:
+        assert b is bot
+
+    bot._loop.close_mcp.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_context_manager_does_not_swallow_exceptions(tmp_path):
+    config_path = _write_config(tmp_path)
+    bot = Nanobot.from_config(config_path, workspace=tmp_path)
+    bot._loop.close_mcp = AsyncMock()
+
+    with pytest.raises(ValueError):
+        async with bot as b:
+            assert b is bot
+            raise ValueError("boom")
+
+    bot._loop.close_mcp.assert_awaited_once()

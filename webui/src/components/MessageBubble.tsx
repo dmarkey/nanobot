@@ -6,14 +6,17 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Check, ChevronRight, Copy, FileIcon, ImageIcon, PlaySquare, Sparkles, Wrench } from "lucide-react";
+import { Check, ChevronRight, Clock3, Copy, ImageIcon, Sparkles, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { AttachmentTile } from "@/components/AttachmentTile";
 import { CliAppMentionText } from "@/components/CliAppMentionText";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { MarkdownText, preloadMarkdownText } from "@/components/MarkdownText";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { formatTurnLatency } from "@/lib/format";
+import { toMediaAttachment } from "@/lib/media";
 import type {
   CliAppInfo,
   McpPresetInfo,
@@ -30,6 +33,7 @@ interface MessageBubbleProps {
   showAssistantCopyAction?: boolean;
   cliApps?: CliAppInfo[];
   mcpPresets?: McpPresetInfo[];
+  onOpenFilePreview?: (path: string) => void;
 }
 
 /**
@@ -46,6 +50,7 @@ export function MessageBubble({
   showAssistantCopyAction = true,
   cliApps = [],
   mcpPresets = [],
+  onOpenFilePreview,
 }: MessageBubbleProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -69,8 +74,8 @@ export function MessageBubble({
   }, []);
 
   const onCopyAssistantReply = useCallback(() => {
-    if (!navigator.clipboard) return;
-    void navigator.clipboard.writeText(message.content).then(() => {
+    void copyTextToClipboard(message.content).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       if (copyResetRef.current !== null) {
         window.clearTimeout(copyResetRef.current);
@@ -126,6 +131,10 @@ export function MessageBubble({
   const reasoning = message.role === "assistant" ? message.reasoning ?? "" : "";
   const reasoningStreaming = !!(message.role === "assistant" && message.reasoningStreaming);
   const hasReasoning = reasoning.length > 0 || reasoningStreaming;
+  const automationSourceLabel = message.source?.kind === "cron"
+    ? (message.source.label?.trim() || t("message.automationSourceFallback"))
+    : "";
+  const automationTriggeredLabel = t("message.automationTriggered");
 
   const showAssistantActions = message.role === "assistant" && !message.isStreaming && !empty;
   const showCopyButton = showAssistantCopyAction && showAssistantActions;
@@ -139,13 +148,29 @@ export function MessageBubble({
   return (
     <div className={cn("w-full text-[15px]", baseAnim)} style={{ lineHeight: "var(--cjk-line-height)" }}>
       {hasReasoning ? (
-        <ReasoningBubble text={reasoning} streaming={reasoningStreaming} hasBodyBelow={!empty} />
+        <ReasoningBubble
+          text={reasoning}
+          streaming={reasoningStreaming}
+          hasBodyBelow={!empty}
+          onOpenFilePreview={onOpenFilePreview}
+        />
       ) : null}
       {empty && message.isStreaming && !hasReasoning ? (
         <TypingDots />
       ) : empty && message.isStreaming ? null : (
         <>
-          <MarkdownText streaming={!!message.isStreaming}>{message.content}</MarkdownText>
+          {automationSourceLabel ? (
+            <AutomationSourceBadge
+              label={automationSourceLabel}
+              triggerLabel={automationTriggeredLabel}
+            />
+          ) : null}
+          <MarkdownText
+            streaming={!!message.isStreaming}
+            onOpenFilePreview={onOpenFilePreview}
+          >
+            {message.content}
+          </MarkdownText>
           {media.length > 0 ? <MessageMedia media={media} align="left" /> : null}
           {showAssistantFooterRow ? (
             <div className="mt-2 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
@@ -180,6 +205,25 @@ export function MessageBubble({
           ) : null}
         </>
       )}
+    </div>
+  );
+}
+
+function AutomationSourceBadge({ label, triggerLabel }: { label: string; triggerLabel: string }) {
+  return (
+    <div
+      className={cn(
+        "mb-2 inline-flex max-w-full items-center gap-1.5 rounded-full px-2 py-1",
+        "border border-sky-500/15 bg-sky-500/[0.06]",
+        "text-[11px] font-medium leading-none text-sky-700",
+        "dark:border-sky-300/15 dark:bg-sky-300/[0.08] dark:text-sky-200/80",
+      )}
+      title={triggerLabel}
+    >
+      <Clock3 className="h-3 w-3 shrink-0" aria-hidden />
+      <span className="min-w-0 truncate">{label}</span>
+      <span className="text-current/45" aria-hidden>·</span>
+      <span className="shrink-0">{triggerLabel}</span>
     </div>
   );
 }
@@ -258,10 +302,11 @@ function MessageMedia({
   const images: UIImage[] = [];
   const nonImages: UIMediaAttachment[] = [];
   for (const item of media) {
-    if (item.kind === "image") {
-      images.push({ url: item.url, name: item.name });
+    const normalized = toMediaAttachment(item);
+    if (normalized.kind === "image") {
+      images.push({ url: normalized.url, name: normalized.name });
     } else {
-      nonImages.push(item);
+      nonImages.push(normalized);
     }
   }
 
@@ -276,69 +321,8 @@ function MessageMedia({
         <UserImages images={images} align={align} size={align === "left" ? "large" : "compact"} />
       ) : null}
       {nonImages.map((item, i) => (
-        <MediaCell key={`${item.url ?? item.name ?? item.kind}-${i}`} media={item} />
+        <AttachmentTile key={`${item.url ?? item.name ?? item.kind}-${i}`} attachment={item} />
       ))}
-    </div>
-  );
-}
-
-function MediaCell({ media }: { media: UIMediaAttachment }) {
-  const { t } = useTranslation();
-  const hasUrl = typeof media.url === "string" && media.url.length > 0;
-
-  if (media.kind === "video" && hasUrl) {
-    return (
-      <figure className="max-w-[min(100%,32rem)] overflow-hidden rounded-[14px] border border-border/60 bg-muted/40">
-        <video
-          src={media.url}
-          controls
-          preload="metadata"
-          className="block max-h-[26rem] w-full bg-black"
-          aria-label={media.name ? `${t("message.videoAttachment", { defaultValue: "Video attachment" })}: ${media.name}` : t("message.videoAttachment", { defaultValue: "Video attachment" })}
-        />
-        {media.name ? (
-          <figcaption className="truncate px-3 py-1.5 text-[11.5px] text-muted-foreground">
-            {media.name}
-          </figcaption>
-        ) : null}
-      </figure>
-    );
-  }
-
-  const label =
-    media.kind === "video"
-      ? t("message.videoAttachment", { defaultValue: "Video attachment" })
-      : t("message.fileAttachment", { defaultValue: "File attachment" });
-  const Icon = media.kind === "video" ? PlaySquare : FileIcon;
-
-  const inner = (
-    <>
-      <Icon className="h-4 w-4 flex-none" aria-hidden />
-      <span className="truncate">{media.name ?? label}</span>
-    </>
-  );
-
-  if (hasUrl) {
-    return (
-      <a
-        href={media.url}
-        download={media.name ?? label}
-        title={media.name ?? undefined}
-        aria-label={label}
-        className="flex max-w-[18rem] items-center gap-2 rounded-[14px] border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground hover:underline"
-      >
-        {inner}
-      </a>
-    );
-  }
-
-  return (
-    <div
-      className="flex max-w-[18rem] items-center gap-2 rounded-[14px] border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
-      title={media.name ?? undefined}
-      aria-label={label}
-    >
-      {inner}
     </div>
   );
 }
@@ -545,6 +529,7 @@ interface ReasoningBubbleProps {
   hasBodyBelow: boolean;
   /** When true, skip the slide-in wrapper (used inside ``AgentActivityCluster``). */
   embeddedInCluster?: boolean;
+  onOpenFilePreview?: (path: string) => void;
 }
 
 /**
@@ -566,6 +551,7 @@ export function ReasoningBubble({
   streaming,
   hasBodyBelow,
   embeddedInCluster = false,
+  onOpenFilePreview,
 }: ReasoningBubbleProps) {
   const { t } = useTranslation();
   const [userToggled, setUserToggled] = useState(false);
@@ -624,13 +610,14 @@ export function ReasoningBubble({
         >
           <MarkdownText
             streaming={streaming}
+            onOpenFilePreview={onOpenFilePreview}
             className={cn(
               "text-[12.5px] italic text-muted-foreground/88",
               "prose-p:my-1.5 prose-li:my-0.5",
               "prose-headings:mt-2 prose-headings:mb-1 prose-headings:font-medium",
               "prose-headings:text-muted-foreground/92 prose-strong:text-muted-foreground",
               "prose-h1:text-[15px] prose-h2:text-[13.5px] prose-h3:text-[12.5px] prose-h4:text-[12px]",
-              "prose-a:text-muted-foreground/95 prose-a:underline hover:prose-a:opacity-90",
+              "prose-a:text-blue-500 prose-a:underline hover:prose-a:text-blue-600 dark:prose-a:text-blue-300 dark:hover:prose-a:text-blue-200",
               "prose-code:text-[0.92em]",
             )}
           >

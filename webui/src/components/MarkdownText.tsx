@@ -16,6 +16,7 @@ interface MarkdownTextProps {
   children: string;
   className?: string;
   streaming?: boolean;
+  onOpenFilePreview?: (path: string) => void;
 }
 
 const loadMarkdownRenderer = () => import("@/components/MarkdownTextRenderer");
@@ -25,13 +26,19 @@ const MemoizedMarkdownRenderer = memo(function MemoizedMarkdownRenderer({
   source,
   className,
   highlightCode,
+  onOpenFilePreview,
 }: {
   source: string;
   className?: string;
   highlightCode: boolean;
+  onOpenFilePreview?: (path: string) => void;
 }) {
   return (
-    <LazyMarkdownRenderer className={className} highlightCode={highlightCode}>
+    <LazyMarkdownRenderer
+      className={className}
+      highlightCode={highlightCode}
+      onOpenFilePreview={onOpenFilePreview}
+    >
       {source}
     </LazyMarkdownRenderer>
   );
@@ -40,6 +47,7 @@ const MemoizedMarkdownRenderer = memo(function MemoizedMarkdownRenderer({
 const SHORT_STREAM_COMMIT_MS = 80;
 const MEDIUM_STREAM_COMMIT_MS = 140;
 const LONG_STREAM_COMMIT_MS = 220;
+const STREAMING_HIGHLIGHT_CHAR_LIMIT = 16_000;
 
 export function preloadMarkdownText(): void {
   void loadMarkdownRenderer();
@@ -54,9 +62,12 @@ export function MarkdownText({
   children,
   className,
   streaming = false,
+  onOpenFilePreview,
 }: MarkdownTextProps) {
   const renderedSource = useStreamingMarkdownSource(children, streaming);
-  const highlightCode = !streaming && renderedSource === children;
+  const highlightCode = streaming
+    ? renderedSource.length <= STREAMING_HIGHLIGHT_CHAR_LIMIT
+    : renderedSource === children;
 
   useEffect(() => {
     if (streaming) preloadMarkdownText();
@@ -79,6 +90,7 @@ export function MarkdownText({
         source={renderedSource}
         className={className}
         highlightCode={highlightCode}
+        onOpenFilePreview={onOpenFilePreview}
       />
     </Suspense>
   );

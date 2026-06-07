@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,8 +14,10 @@ from nanobot.agent.tools.long_task import (
     LongTaskTool,
 )
 from nanobot.bus.queue import MessageBus
+from nanobot.bus.runtime_events import RuntimeEventBus
 from nanobot.session.goal_state import GOAL_STATE_KEY
 from nanobot.session.manager import SessionManager
+from nanobot.session.webui_turns import WebuiTurnCoordinator
 
 
 def _tools(sm: SessionManager) -> tuple[LongTaskTool, CompleteGoalTool]:
@@ -73,11 +76,60 @@ async def test_complete_goal_closes_active_goal(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_goal_tools_keep_request_context_per_task(tmp_path):
+    sm = SessionManager(tmp_path)
+    lt = LongTaskTool(sessions=sm)
+    cg = CompleteGoalTool(sessions=sm)
+    ctx_a = RequestContext(channel="websocket", chat_id="a", session_key="websocket:a")
+    ctx_b = RequestContext(channel="websocket", chat_id="b", session_key="websocket:b")
+
+    lt.set_context(ctx_a)
+    task_a = asyncio.create_task(lt.execute(goal="Goal A"))
+    lt.set_context(ctx_b)
+    task_b = asyncio.create_task(lt.execute(goal="Goal B"))
+    await asyncio.gather(task_a, task_b)
+
+    assert sm.get_or_create("websocket:a").metadata[GOAL_STATE_KEY]["objective"] == "Goal A"
+    assert sm.get_or_create("websocket:b").metadata[GOAL_STATE_KEY]["objective"] == "Goal B"
+
+    cg.set_context(ctx_a)
+    done_a = asyncio.create_task(cg.execute(recap="Done A"))
+    cg.set_context(ctx_b)
+    done_b = asyncio.create_task(cg.execute(recap="Done B"))
+    await asyncio.gather(done_a, done_b)
+
+    assert sm.get_or_create("websocket:a").metadata[GOAL_STATE_KEY]["recap"] == "Done A"
+    assert sm.get_or_create("websocket:b").metadata[GOAL_STATE_KEY]["recap"] == "Done B"
+
+
+@pytest.mark.asyncio
+async def test_goal_tools_context_isolated_across_tool_types(tmp_path):
+    """LongTaskTool and CompleteGoalTool must not share routing context."""
+    sm = SessionManager(tmp_path)
+    lt = LongTaskTool(sessions=sm)
+    cg = CompleteGoalTool(sessions=sm)
+    ctx = RequestContext(channel="websocket", chat_id="a", session_key="websocket:a")
+
+    lt.set_context(ctx)
+    assert cg._request_ctx.get() is None
+
+    cg.set_context(ctx)
+    assert lt._request_ctx.get() is ctx
+    assert cg._request_ctx.get() is ctx
+
+
+@pytest.mark.asyncio
 async def test_long_task_publishes_goal_state_ws_after_save(tmp_path):
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
+    runtime_events = RuntimeEventBus()
     sm = SessionManager(tmp_path)
-    lt = LongTaskTool(sessions=sm, bus=bus)
+    WebuiTurnCoordinator(
+        bus=bus,
+        sessions=sm,
+        schedule_background=lambda _coro: None,
+    ).subscribe(runtime_events)
+    lt = LongTaskTool(sessions=sm, runtime_events=runtime_events)
     rc = RequestContext(
         channel="websocket",
         chat_id="chat-99",
@@ -104,9 +156,15 @@ async def test_long_task_publishes_goal_state_ws_after_save(tmp_path):
 async def test_complete_goal_publishes_inactive_goal_state_ws(tmp_path):
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
+    runtime_events = RuntimeEventBus()
     sm = SessionManager(tmp_path)
-    lt = LongTaskTool(sessions=sm, bus=bus)
-    cg = CompleteGoalTool(sessions=sm, bus=bus)
+    WebuiTurnCoordinator(
+        bus=bus,
+        sessions=sm,
+        schedule_background=lambda _coro: None,
+    ).subscribe(runtime_events)
+    lt = LongTaskTool(sessions=sm, runtime_events=runtime_events)
+    cg = CompleteGoalTool(sessions=sm, runtime_events=runtime_events)
     rc = RequestContext(
         channel="websocket",
         chat_id="chat-z",

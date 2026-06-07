@@ -25,7 +25,9 @@
       "section": "System",
       "restartHint": "Restart nanobot to apply runtime changes.",
       "restart": "Restart nanobot",
-      "restarting": "Restarting..."
+      "restarting": "Restarting...",
+      "restartEngine": "Restart engine",
+      "restartingEngine": "Restarting engine..."
     },
     "restart": {
       "completed": "Restart completed in {{seconds}}s."
@@ -40,31 +42,22 @@
   },
   "sidebar": {
     "navigation": "Sidebar navigation",
-    "globalActions": "Global actions",
     "collapse": "Collapse sidebar",
-    "toggleTheme": "Toggle theme",
-    "home": "Home",
     "newChat": "New chat",
     "searchAria": "Search",
-    "viewOptions": "View",
-    "compactList": "Compact list",
-    "showPreviews": "Show previews",
-    "showTimestamps": "Show time",
-    "sortLabel": "Sort",
-    "sortUpdated": "Recently updated",
-    "sortCreated": "Recently created",
-    "sortTitle": "Title A-Z",
     "searchPlaceholder": "Search",
     "searchResults": "Results",
     "noSearchResults": "No matching chats.",
     "recent": "Recent",
-    "refreshSessions": "Refresh sessions",
     "settings": "Settings",
     "language": {
       "label": "Language",
       "ariaLabel": "Change language"
     },
-    "apps": "Apps"
+    "apps": "Apps",
+    "skills": {
+      "title": "Skills"
+    }
   },
   "settings": {
     "backToChat": "Back to chat",
@@ -80,12 +73,13 @@
       "models": "Models",
       "providers": "Providers",
       "image": "Image",
-      "web": "Web",
+      "browser": "Web",
       "cliApps": "CLI Apps",
       "mcp": "MCP",
-      "runtime": "Runtime",
-      "advanced": "Advanced",
-      "apps": "Apps"
+      "runtime": "System",
+      "advanced": "Security",
+      "apps": "Apps",
+      "skills": "Skills"
     },
     "sections": {
       "interface": "Interface",
@@ -101,18 +95,30 @@
       "cliApps": "CLI apps",
       "mcp": "MCP services",
       "identity": "Identity",
-      "safety": "Safety",
+      "webuiSafety": "Web safety",
       "capabilities": "Capabilities",
-      "integrations": "Integrations",
-      "apps": "Apps"
+      "apps": "Apps",
+      "nativeHost": "Native host",
+      "hostSafety": "App safety"
     },
     "models": {
       "selectModel": "Select model",
       "addConfiguration": "Add configuration",
       "newConfiguration": "New model configuration",
       "newConfigurationHelp": "Save a provider and model as a one-click option.",
-      "configurationName": "Name",
-      "configurationNamePlaceholder": "Fast writing"
+      "configurationName": "Configuration name",
+      "configurationNameHelp": "Rename this saved model configuration.",
+      "configurationNamePlaceholder": "Fast writing",
+      "searchModels": "Search or type model ID",
+      "useCustomModel": "Use",
+      "loadingModels": "Loading models...",
+      "searchCatalog": "Search provider catalog to choose a model.",
+      "modelsAvailable": "available",
+      "noModelResults": "No matching models.",
+      "loadFailed": "Model list unavailable.",
+      "unsupportedModelList": "Type a model ID manually.",
+      "providerNotConfigured": "Configure this provider before loading models.",
+      "autoProviderCustomOnly": "Auto provider mode uses custom model IDs."
     },
     "rows": {
       "theme": "Theme",
@@ -125,7 +131,7 @@
       "gateway": "Gateway",
       "restartState": "Restart state",
       "pendingChanges": "Pending changes",
-      "currentModel": "Current model",
+      "currentModel": "Current configuration",
       "selectedPreset": "Selected preset",
       "presetModel": "Preset model",
       "density": "Density",
@@ -147,20 +153,15 @@
       "botName": "Bot name",
       "botIcon": "Bot icon",
       "timezone": "Timezone",
-      "toolHintMaxLength": "Tool hint length",
-      "workspacePath": "Workspace path",
-      "heartbeat": "Heartbeat",
-      "dream": "Dream",
-      "unifiedSession": "Unified session",
-      "restrictWorkspace": "Restrict to workspace",
-      "execTool": "Exec tool",
-      "execSandbox": "Exec sandbox",
-      "ssrfWhitelist": "SSRF whitelist",
-      "mcpServers": "MCP servers",
-      "pathAppend": "PATH append",
+      "workspacePath": "Default workspace",
+      "localServiceAccess": "Local services",
+      "webuiDefaultAccess": "Default access",
       "cliAppsCatalog": "Catalog",
       "cliAppsFilter": "Filter",
-      "configurationDocs": "Configuration docs"
+      "engine": "Engine",
+      "logs": "Logs",
+      "diagnostics": "Diagnostics",
+      "contextWindow": "Context window"
     },
     "help": {
       "theme": "Switch between light and dark appearance.",
@@ -168,7 +169,7 @@
       "provider": "Select the provider that should serve new model requests.",
       "model": "Set the default model name used by nanobot.",
       "configPath": "The gateway configuration file currently in use.",
-      "currentModel": "Choose the model nanobot uses for new replies.",
+      "currentModel": "Used for new replies.",
       "selectedModelProvider": "Set by the selected model.",
       "selectedModelValue": "Set by the selected model.",
       "selectedPreset": "Named presets are read-only here; edit them in config.json.",
@@ -187,13 +188,19 @@
       "defaultAspectRatio": "Used when the prompt does not choose an aspect ratio.",
       "defaultImageSize": "Size hint sent to providers that support it.",
       "maxImagesPerTurn": "Upper bound for one generate_image request.",
-      "botName": "Shown in runtime surfaces that use the configured bot identity.",
-      "botIcon": "Short emoji or text shown beside the bot name.",
-      "timezone": "IANA timezone used by runtime context and schedules.",
-      "toolHintMaxLength": "Maximum characters shown in tool progress hints.",
-      "cliAppsCatalog": "Install only the app-specific CLI adapters nanobot can run locally; desktop apps stay untouched.",
+      "botName": "Shown wherever nanobot uses a display name.",
+      "botIcon": "Short emoji or text shown with the bot name.",
+      "timezone": "Used for schedules and time-aware replies.",
+      "cliAppsCatalog": "Install only the app-specific CLI adapters nanobot can run locally; native apps stay untouched.",
       "cliAppsFilter": "Search by app, category, or capability.",
-      "advancedReadOnly": "Advanced safety controls are read-only in WebUI. Edit config.json intentionally when needed."
+      "localServiceAccess": "Allow Full Access shell commands to reach localhost services.",
+      "webuiDefaultAccess": "Used by web chats without a project-specific permission.",
+      "securityManagedControls": "Web fetches always protect local, private, and metadata services. Core channel safety stays in config.json.",
+      "logs": "Open the native engine log folder.",
+      "diagnostics": "Export a small runtime report for support.",
+      "localServiceAccessNative": "Allow Full Access shell commands to reach services on this Mac.",
+      "webuiDefaultAccessNative": "Used by native chats without a project-specific permission.",
+      "contextWindow": "Choose the default context budget for this model configuration."
     },
     "timezone": {
       "select": "Select timezone",
@@ -292,14 +299,21 @@
       "disabled": "Disabled",
       "restartPending": "Restart pending",
       "ready": "Ready",
+      "privateEngine": "Private engine",
+      "unixSocket": "Unix socket",
+      "defaultWorkspace": "Default workspace",
       "comfortable": "Comfortable",
       "compact": "Compact",
       "auto": "Auto",
       "expanded": "Expanded",
       "on": "On",
       "off": "Off",
+      "defaultPermission": "Default Permission",
+      "fullAccess": "Full Access",
       "configured": "Configured",
-      "notConfigured": "Not configured"
+      "notConfigured": "Not configured",
+      "pending": "Pending",
+      "restartingEngine": "Restarting"
     },
     "status": {
       "loading": "Loading settings...",
@@ -309,14 +323,24 @@
       "savedRestart": "Saved. Restart nanobot to apply.",
       "restartAfterSaving": "Save changes, then restart when ready.",
       "savedRestartApply": "Saved. Restart when ready.",
-      "imageProviderRestart": "Image provider changes saved. Restart when ready."
+      "imageProviderRestart": "Image provider changes saved. Restart when ready.",
+      "hostRestartAfterSaving": "Save changes and nanobot will restart its engine.",
+      "hostRestartPending": "Saved. Restarting engine when ready.",
+      "hostApiUnavailable": "Host actions are only available inside the native app.",
+      "logsOpened": "Opened logs folder.",
+      "logsOpenFailed": "Could not open logs folder.",
+      "diagnosticsExported": "Diagnostics exported to {{path}}.",
+      "diagnosticsExportFailed": "Could not export diagnostics."
     },
     "actions": {
       "save": "Save",
       "saving": "Saving",
       "edit": "Edit",
       "cancel": "Cancel",
-      "openDocs": "Open docs"
+      "open": "Open",
+      "export": "Export",
+      "opening": "Opening...",
+      "exporting": "Exporting..."
     },
     "byok": {
       "description": "Bring your own provider keys. Nanobot reads these values from the current config and only configured providers can be selected in General.",
@@ -369,6 +393,31 @@
       "imageGeneration": "Image generation",
       "workspace": "Workspace"
     },
+    "usage": {
+      "title": "Token activity",
+      "shortTitle": "Token Usage",
+      "subtitle": "Provider-reported usage over the last 12 months.",
+      "empty": "Token activity will appear after new model replies.",
+      "totalTokens": "Total tokens",
+      "peakTokens": "Peak tokens",
+      "thirtyDayTokens": "30-day tokens",
+      "currentStreak": "Current streak",
+      "longestStreak": "Longest streak",
+      "daysValue": "{{count}}d",
+      "last30": "30 days",
+      "activeDays": "Active days",
+      "requests": "Requests",
+      "estimated": "estimated",
+      "includesEstimates": "includes estimates",
+      "cellTitle": "{{date}}: {{tokens}} tokens, {{requests}} requests",
+      "sources": {
+        "user": "Chat",
+        "api": "API",
+        "cron": "Automations",
+        "dream": "Memory",
+        "system": "System"
+      }
+    },
     "providers": {
       "searchPlaceholder": "Search providers",
       "noMatches": "No providers match this search.",
@@ -397,6 +446,46 @@
       "featured": "Featured",
       "loading": "Loading Apps...",
       "empty": "No apps match this filter."
+    },
+    "oauth": {
+      "authentication": "OAuth authentication",
+      "signIn": "Sign in",
+      "signingIn": "Signing in...",
+      "signInAgain": "Sign in again",
+      "signOut": "Sign out",
+      "signedInAs": "Signed in as {{account}}",
+      "signInHelp": "Sign in from this device; no API key is stored in config.",
+      "signInRequired": "Sign in required",
+      "signInBeforeSaving": "Sign in before saving this OAuth provider as the active model provider.",
+      "signedIn": "Signed in",
+      "notSignedIn": "Not signed in"
+    },
+    "skills": {
+      "description": "Review the instruction skills this agent can load during a conversation.",
+      "caption": "{{available}} available · {{total}} total",
+      "featured": "Agent skills",
+      "empty": "No skills are available.",
+      "sourceWorkspace": "Custom",
+      "sourceBuiltin": "Built-in",
+      "statusAvailable": "Available",
+      "statusUnavailable": "Unavailable",
+      "unavailableReason": "Missing: {{reason}}",
+      "openDetails": "Open details for {{name}}",
+      "loadingDetail": "Loading skill details...",
+      "loadFailed": "Could not load skill details.",
+      "descriptionTitle": "Description",
+      "source": "Source",
+      "status": "Status",
+      "requirements": "Requirements",
+      "noRequirements": "No explicit requirements.",
+      "commands": "Commands",
+      "environment": "Environment variables",
+      "missingCommands": "Missing CLI",
+      "missingEnvironment": "Missing ENV",
+      "unavailableReasonLabel": "Unavailable reason",
+      "rawInstructions": "Raw SKILL.md",
+      "rawInstructionsEmpty": "No raw instructions.",
+      "detailDescription": "Details for {{name}}."
     }
   },
   "chat": {
@@ -404,7 +493,10 @@
     "loading": "Loading…",
     "noSessions": "No sessions yet.",
     "showMore": "Show {{count}} more",
+    "collapsed": "{{count}} hidden chats",
+    "showLess": "Show less",
     "actions": "Chat actions for {{title}}",
+    "newInProject": "Start a new chat in {{project}}",
     "activity": {
       "running": "Agent running",
       "complete": "Agent finished"
@@ -415,6 +507,9 @@
     "renameTitle": "Rename chat",
     "renameDescription": "Choose a local sidebar name for this chat.",
     "renamePlaceholder": "Chat name",
+    "renameProjectTitle": "Rename project",
+    "renameProjectDescription": "Choose a local sidebar name for this project.",
+    "renameProjectPlaceholder": "Project name",
     "renameSave": "Save",
     "archive": "Archive",
     "unarchive": "Unarchive",
@@ -425,6 +520,7 @@
     "groups": {
       "pinned": "Pinned",
       "all": "Chats",
+      "projects": "Projects",
       "today": "Today",
       "yesterday": "Yesterday",
       "earlier": "Earlier",
@@ -448,7 +544,12 @@
   "thread": {
     "loadingConversation": "Loading conversation…",
     "empty": {
-      "greeting": "What can I do for you?",
+      "greetings": {
+        "workOn": "What should we work on?",
+        "start": "Where should we start?",
+        "build": "What are we building today?",
+        "tackle": "What should we tackle together?"
+      },
       "quickActions": {
         "plan": {
           "title": "Create a project plan",
@@ -506,7 +607,30 @@
       "toggleSidebar": "Toggle sidebar",
       "newChat": "Start a new chat",
       "toggleTheme": "Toggle theme from header",
-      "settings": "Open settings"
+      "settings": "Open settings",
+      "sessionInfo": "Session details"
+    },
+    "sessionInfo": {
+      "title": "Session",
+      "untitled": "Untitled chat",
+      "automations": "Automations",
+      "count": "{{count}}",
+      "loading": "Loading automations...",
+      "loadFailed": "Could not load automations.",
+      "empty": "No automations in this session yet.",
+      "disabled": "Off",
+      "schedule": {
+        "at": "{{time}}",
+        "every": "Every {{duration}}",
+        "cron": "Cron {{expr}}",
+        "cronWithTz": "Cron {{expr}} · {{tz}}",
+        "unknown": "Custom schedule"
+      },
+      "next": {
+        "label": "{{time}}",
+        "disabled": "Paused",
+        "none": "No next run"
+      }
     },
     "composer": {
       "placeholderThread": "Type your message…",
@@ -523,6 +647,15 @@
       "goalStateCloseAria": "Close goal",
       "send": "Send message",
       "stop": "Stop response",
+      "modelNotConfigured": "Model not configured",
+      "configureModel": "Configure model",
+      "queued": {
+        "label": "Queued guidance",
+        "guide": "Guide",
+        "delete": "Delete guidance",
+        "edit": "Edit guidance",
+        "drag": "Drag to reorder"
+      },
       "attachImage": "Attach image",
       "imageMode": {
         "label": "Image Generation",
@@ -632,10 +765,24 @@
         "decode_failed": "Couldn't decode this image",
         "too_large": "Image is too large — try a smaller one",
         "io": "Couldn't read this file"
+      },
+      "workspace": {
+        "accessAria": "Workspace access mode",
+        "projectAria": "Choose project",
+        "projectPlaceholder": "Select project",
+        "default": "Default Permission",
+        "full": "Full Access"
       }
     },
     "scrollToBottom": "Scroll to bottom",
-    "loadEarlier": "Load earlier messages"
+    "loadEarlier": "Load earlier messages",
+    "promptNavigator": {
+      "open": "Open prompt navigator",
+      "title": "Prompts",
+      "search": "Search prompts",
+      "noResults": "No matching prompts.",
+      "jumpTo": "Jump to prompt: {{label}}"
+    }
   },
   "message": {
     "streaming": "streaming",
@@ -666,6 +813,8 @@
     "cliRunRan": "Used",
     "cliRunFailed": "Failed",
     "imageAttachment": "Image attachment",
+    "automationSourceFallback": "Automation",
+    "automationTriggered": "Triggered automatically",
     "copyReply": "Copy reply",
     "copiedReply": "Copied reply",
     "turnLatencyTitle": "Response time (end-to-end)"
@@ -676,6 +825,15 @@
     "prev": "Previous image",
     "next": "Next image",
     "close": "Close image preview"
+  },
+  "filePreview": {
+    "aria": "File preview",
+    "close": "Close file preview",
+    "loading": "Loading preview...",
+    "failed": "Could not preview this file.",
+    "routeMissing": "File preview needs the latest gateway. Restart nanobot gateway and try again.",
+    "resize": "Resize file preview",
+    "truncated": "Preview is truncated because this file is large."
   },
   "code": {
     "fallbackLanguage": "code",
@@ -690,6 +848,19 @@
     "messageTooBig": {
       "title": "Message too large",
       "body": "The server rejected your last message because it exceeded the size limit. Remove some images or try smaller files, then send again."
+    },
+    "workspaceScopeRejected": {
+      "title": "Workspace was not changed",
+      "body": "Nanobot kept the previous workspace because the requested project or access mode was rejected by the gateway."
+    }
+  },
+  "workspace": {
+    "dialog": {
+      "defaultProject": "Default workspace",
+      "manual": "Paste path",
+      "manualPlaceholder": "/Users/name/project",
+      "usePath": "Use Path",
+      "absolutePathRequired": "Enter an absolute folder path on this machine."
     }
   }
 }

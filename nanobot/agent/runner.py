@@ -6,22 +6,25 @@ import asyncio
 import inspect
 import os
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from loguru import logger
 
-from nanobot.agent.hook import AgentHook, AgentHookContext
+from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.utils.file_edit_events import (
+    StreamingFileEditTracker,
     build_file_edit_end_event,
     build_file_edit_error_event,
     build_file_edit_start_event,
-    prepare_file_edit_tracker as _prepare_file_edit_tracker,
     prepare_file_edit_trackers,
-    StreamingFileEditTracker,
+)
+from nanobot.utils.file_edit_events import (
+    prepare_file_edit_tracker as _prepare_file_edit_tracker,
 )
 from nanobot.utils.helpers import (
     IncrementalThinkExtractor,
@@ -42,6 +45,7 @@ from nanobot.utils.prompt_templates import render_template
 from nanobot.utils.runtime import (
     EMPTY_FINAL_RESPONSE_MESSAGE,
     build_finalization_retry_message,
+    build_goal_continue_message,
     build_length_recovery_message,
     ensure_nonempty_tool_result,
     is_blank_text,
@@ -50,6 +54,10 @@ from nanobot.utils.runtime import (
 )
 
 _DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
+_ARREARAGE_ERROR_MESSAGE = (
+    "The AI provider rejected the request because the API key is out of quota or the "
+    "account is in arrears. Please top up / check the billing status of your API key and try again."
+)
 _PERSISTED_MODEL_ERROR_PLACEHOLDER = "[Assistant reply unavailable due to model error.]"
 _MAX_EMPTY_RETRIES = 2
 _MAX_LENGTH_RECOVERIES = 3
@@ -62,6 +70,8 @@ _COMPACTABLE_TOOLS = frozenset({
     "read_file", "exec", "grep", "find_files",
     "web_search", "web_fetch", "list_dir", "list_exec_sessions",
 })
+# read_file is the recovery path for persisted results; exempting it prevents persist->read->persist loops.
+_TOOL_RESULT_OFFLOAD_EXEMPT_TOOLS = frozenset({"read_file"})
 _BACKFILL_CONTENT = "[Tool result unavailable — call was interrupted or lost]"
 
 # Backward-compatible module attribute for tests/extensions that monkeypatch
@@ -97,6 +107,8 @@ class AgentRunSpec:
     checkpoint_callback: Any | None = None
     injection_callback: Any | None = None
     llm_timeout_s: float | None = None
+    goal_active_predicate: Callable[[], bool] | None = None
+    goal_continue_message: str | None = None
 
 
 @dataclass(slots=True)
@@ -167,6 +179,7 @@ class AgentRunner:
         *,
         phase: str = "after error",
         iteration: int | None = None,
+        allow_goal_continue: bool = False,
     ) -> tuple[bool, int]:
         """Drain pending injections. Returns (should_continue, updated_cycles).
 
@@ -175,12 +188,19 @@ class AgentRunner:
         and *iteration* are both provided) and return (True, cycles+1) so the
         caller continues the iteration loop.  Otherwise return (False, cycles).
         """
-        if injection_cycles >= _MAX_INJECTION_CYCLES:
-            return False, injection_cycles
-        injections = await self._drain_injections(spec)
+        injections: list[dict[str, Any]] = []
+        real_injection = False
+        if injection_cycles < _MAX_INJECTION_CYCLES:
+            injections = await self._drain_injections(spec)
+            real_injection = bool(injections)
+        if not injections and allow_goal_continue and assistant_message is not None:
+            predicate = spec.goal_active_predicate
+            if predicate is not None and predicate():
+                injections = [build_goal_continue_message(spec.goal_continue_message)]
         if not injections:
             return False, injection_cycles
-        injection_cycles += 1
+        if real_injection:
+            injection_cycles += 1
         if assistant_message is not None:
             messages.append(assistant_message)
             if iteration is not None:
@@ -196,10 +216,13 @@ class AgentRunner:
                     },
                 )
         self._append_injected_messages(messages, injections)
-        logger.info(
-            "Injected {} follow-up message(s) {} ({}/{})",
-            len(injections), phase, injection_cycles, _MAX_INJECTION_CYCLES,
-        )
+        if real_injection:
+            logger.info(
+                "Injected {} follow-up message(s) {} ({}/{})",
+                len(injections), phase, injection_cycles, _MAX_INJECTION_CYCLES,
+            )
+        else:
+            logger.info("Injected sustained-goal continuation {}", phase)
         return True, injection_cycles
 
     async def _drain_injections(self, spec: AgentRunSpec) -> list[dict[str, Any]]:
@@ -250,6 +273,57 @@ class AgentRunner:
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
         hook = spec.hook or AgentHook()
         messages = list(spec.initial_messages)
+        context = AgentRunHookContext(messages=deepcopy(messages))
+
+        try:
+            await hook.before_run(context)
+            result = await self._run_core(spec, hook, messages)
+        except asyncio.CancelledError as exc:
+            context.messages = deepcopy(messages)
+            context.stop_reason = "cancelled"
+            context.error = None
+            context.exception = exc
+            raise
+        except Exception as exc:
+            context.messages = deepcopy(messages)
+            context.stop_reason = "error"
+            context.error = f"Error: {type(exc).__name__}: {exc}"
+            context.exception = exc
+            await hook.on_error(context)
+            raise
+        else:
+            context.messages = deepcopy(result.messages)
+            context.final_content = result.final_content
+            context.tools_used = list(result.tools_used)
+            context.usage = dict(result.usage)
+            context.stop_reason = result.stop_reason
+            context.error = result.error
+            context.tool_events = deepcopy(result.tool_events)
+            context.had_injections = result.had_injections
+            context.exception = None
+            if context.error is not None:
+                await hook.on_error(context)
+            await hook.after_run(context)
+            return result
+        finally:
+            context.messages = deepcopy(messages)
+            if context.exception is None:
+                await hook.on_finally(context)
+            else:
+                try:
+                    await hook.on_finally(context)
+                except Exception:
+                    logger.exception(
+                        "AgentHook.on_finally error after {}",
+                        context.stop_reason or "run exception",
+                    )
+
+    async def _run_core(
+        self,
+        spec: AgentRunSpec,
+        hook: AgentHook,
+        messages: list[dict[str, Any]],
+    ) -> AgentRunResult:
         final_content: str | None = None
         tools_used: list[str] = []
         usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -289,14 +363,15 @@ class AgentRunner:
                     messages_for_model = self._backfill_missing_tool_results(messages_for_model)
                 except Exception:
                     messages_for_model = messages
-            context = AgentHookContext(iteration=iteration, messages=messages)
+            context = AgentHookContext(
+                iteration=iteration,
+                messages=messages,
+                session_key=spec.session_key,
+            )
             await hook.before_iteration(context)
             response = await self._request_model(spec, messages_for_model, hook, context)
-            raw_usage = self._usage_dict(response.usage)
             context.response = response
-            context.usage = dict(raw_usage)
             context.tool_calls = list(response.tool_calls)
-            self._accumulate_usage(usage, raw_usage)
 
             reasoning_text, cleaned_content = extract_reasoning(
                 response.reasoning_content,
@@ -304,6 +379,9 @@ class AgentRunner:
                 response.content,
             )
             response.content = cleaned_content
+            raw_usage = self._usage_or_estimate(spec, messages_for_model, response)
+            context.usage = dict(raw_usage)
+            self._accumulate_usage(usage, raw_usage)
             if reasoning_text and not context.streamed_reasoning:
                 await hook.emit_reasoning(reasoning_text)
                 await hook.emit_reasoning_end()
@@ -439,8 +517,9 @@ class AgentRunner:
                 )
                 if hook.wants_streaming():
                     await hook.on_stream_end(context, resuming=False)
+                retry_messages = self._finalization_retry_messages(messages_for_model)
                 response = await self._request_finalization_retry(spec, messages_for_model)
-                retry_usage = self._usage_dict(response.usage)
+                retry_usage = self._usage_or_estimate(spec, retry_messages, response)
                 self._accumulate_usage(usage, retry_usage)
                 raw_usage = self._merge_usage(raw_usage, retry_usage)
                 context.response = response
@@ -484,6 +563,7 @@ class AgentRunner:
                 spec, messages, assistant_message, injection_cycles,
                 phase="after final response",
                 iteration=iteration,
+                allow_goal_continue=True,
             )
             if should_continue:
                 had_injections = True
@@ -496,7 +576,10 @@ class AgentRunner:
                 continue
 
             if response.finish_reason == "error":
-                final_content = clean or spec.error_message or _DEFAULT_ERROR_MESSAGE
+                if LLMProvider.is_arrearage_response(response):
+                    final_content = _ARREARAGE_ERROR_MESSAGE
+                else:
+                    final_content = clean or spec.error_message or _DEFAULT_ERROR_MESSAGE
                 stop_reason = "error"
                 error = final_content
                 self._append_model_error_placeholder(messages)
@@ -752,10 +835,59 @@ class AgentRunner:
         spec: AgentRunSpec,
         messages: list[dict[str, Any]],
     ):
-        retry_messages = list(messages)
-        retry_messages.append(build_finalization_retry_message())
+        retry_messages = self._finalization_retry_messages(messages)
         kwargs = self._build_request_kwargs(spec, retry_messages, tools=None)
         return await self.provider.chat_with_retry(**kwargs)
+
+    @staticmethod
+    def _finalization_retry_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        retry_messages = list(messages)
+        retry_messages.append(build_finalization_retry_message())
+        return retry_messages
+
+    def _usage_or_estimate(
+        self,
+        spec: AgentRunSpec,
+        messages: list[dict[str, Any]],
+        response: LLMResponse,
+    ) -> dict[str, int]:
+        usage = self._usage_dict(response.usage)
+        total = self._usage_total(usage)
+        if total > 0:
+            usage["total_tokens"] = total
+            usage.setdefault("provider_tokens", total)
+            return usage
+        if response.finish_reason == "error":
+            return {}
+        return self._estimate_response_usage(spec, messages, response)
+
+    def _estimate_response_usage(
+        self,
+        spec: AgentRunSpec,
+        messages: list[dict[str, Any]],
+        response: LLMResponse,
+    ) -> dict[str, int]:
+        try:
+            tools = spec.tools.get_definitions()
+        except Exception:
+            tools = None
+        prompt_tokens, _ = estimate_prompt_tokens_chain(self.provider, spec.model, messages, tools)
+        assistant_message = build_assistant_message(
+            response.content or "",
+            tool_calls=[tc.to_openai_tool_call() for tc in response.tool_calls],
+            reasoning_content=response.reasoning_content,
+            thinking_blocks=response.thinking_blocks,
+        )
+        completion_tokens = estimate_message_tokens(assistant_message)
+        total_tokens = max(0, prompt_tokens) + max(0, completion_tokens)
+        if total_tokens <= 0:
+            return {}
+        return {
+            "prompt_tokens": max(0, prompt_tokens),
+            "completion_tokens": max(0, completion_tokens),
+            "total_tokens": total_tokens,
+            "estimated_tokens": total_tokens,
+        }
 
     @staticmethod
     def _usage_dict(usage: dict[str, Any] | None) -> dict[str, int]:
@@ -768,6 +900,12 @@ class AgentRunner:
             except (TypeError, ValueError):
                 continue
         return result
+
+    @staticmethod
+    def _usage_total(usage: dict[str, int]) -> int:
+        return max(0, usage.get("total_tokens", 0) or (
+            usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+        ))
 
     @staticmethod
     def _accumulate_usage(target: dict[str, int], addition: dict[str, int]) -> None:
@@ -1107,6 +1245,9 @@ class AgentRunner:
         result: Any,
     ) -> Any:
         result = ensure_nonempty_tool_result(tool_name, result)
+        if tool_name in _TOOL_RESULT_OFFLOAD_EXEMPT_TOOLS:
+            # Exempt tools bound their own output; skip generic offload and truncation.
+            return result
         try:
             content = maybe_persist_tool_result(
                 spec.workspace,
@@ -1273,7 +1414,13 @@ class AgentRunner:
             return messages
 
         system_tokens = sum(estimate_message_tokens(msg) for msg in system_messages)
-        remaining_budget = max(128, budget - system_tokens)
+        fixed_tokens, _ = estimate_prompt_tokens_chain(
+            self.provider,
+            spec.model,
+            system_messages,
+            spec.tools.get_definitions(),
+        )
+        remaining_budget = max(0, budget - max(system_tokens, fixed_tokens))
         kept: list[dict[str, Any]] = []
         kept_tokens = 0
         for message in reversed(non_system):

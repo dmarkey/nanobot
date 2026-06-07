@@ -20,18 +20,27 @@ import httpx
 
 from nanobot.apps.protocol import app_manifest, compact_dict
 from nanobot.config.paths import get_runtime_subdir
+from nanobot.security.workspace_policy import is_path_within
 
 CLI_ANYTHING_REGISTRY_URL = "https://hkuds.github.io/CLI-Anything/registry.json"
 CLI_ANYTHING_PUBLIC_REGISTRY_URL = "https://hkuds.github.io/CLI-Anything/public_registry.json"
 CLI_ANYTHING_RAW_BASE = "https://raw.githubusercontent.com/HKUDS/CLI-Anything/main"
-CLI_ANYTHING_RAW_SKILLS_BASE = f"{CLI_ANYTHING_RAW_BASE}/skills/"
+NANOBOT_EXTENSION_REGISTRY_URL = "https://raw.githubusercontent.com/Re-bin/nanobot-extension/main/registry.json"
+NANOBOT_EXTENSION_RAW_BASE = "https://raw.githubusercontent.com/Re-bin/nanobot-extension/main"
+_CATALOG_SOURCES = (
+    ("harness", CLI_ANYTHING_REGISTRY_URL, CLI_ANYTHING_RAW_BASE, True),
+    ("public", CLI_ANYTHING_PUBLIC_REGISTRY_URL, CLI_ANYTHING_RAW_BASE, True),
+    ("extensions", NANOBOT_EXTENSION_REGISTRY_URL, NANOBOT_EXTENSION_RAW_BASE, False),
+)
 
 _MAX_TOOL_OUTPUT_CHARS = 12_000
 _MAX_ARTIFACT_SCAN_PATHS = 4_000
 _MAX_ARTIFACT_REPORT = 12
 _SAFE_NAME_RE = re.compile(r"[^a-z0-9_-]+")
+_SAFE_NPM_DIR_RE = re.compile(r"^[a-z0-9._-]+$", re.IGNORECASE)
 _MENTION_RE = re.compile(r"(^|[\s([{])@([a-z0-9_-]+)\b", re.IGNORECASE)
 _SHELL_META_CHARS = ("|", "&&", "||", ";", "$(", "`", ">", "<")
+_ENDORSEMENT_WORD_RE = re.compile(r"\bofficial\s+", re.IGNORECASE)
 _ARTIFACT_EXTENSIONS = frozenset({
     ".csv",
     ".drawio",
@@ -86,6 +95,8 @@ class CliAppsRuntimeConfig:
 
 _BRANDS: dict[str, tuple[str, str]] = {
     "1password-cli": ("1password", "#3B66BC"),
+    "arcgis": ("arcgis", "#2C7AC3"),
+    "arcgis-pro": ("arcgis", "#2C7AC3"),
     "audacity": ("audacity", "#0000CC"),
     "blender": ("blender", "#E87D0D"),
     "browser": ("googlechrome", "#4285F4"),
@@ -107,6 +118,7 @@ _BRANDS: dict[str, tuple[str, str]] = {
     "intelwatch": ("intel", "#0071C5"),
     "iterm2": ("iterm2", "#000000"),
     "jimeng": ("bytedance", "#3C8CFF"),
+    "joplin": ("joplin", "#1071D3"),
     "kdenlive": ("kdenlive", "#527EB2"),
     "krita": ("krita", "#3BABFF"),
     "libreoffice": ("libreoffice", "#18A303"),
@@ -294,6 +306,11 @@ def _brand_candidates(app: dict[str, Any]) -> list[str]:
 
 
 def _brand_payload(app: dict[str, Any]) -> tuple[str | None, str | None]:
+    declared_logo = str(app.get("logo_url") or "").strip()
+    if declared_logo.startswith(("https://", "/")):
+        declared_color = str(app.get("brand_color") or "").strip()
+        return declared_logo, declared_color or None
+
     brand = None
     domain_brand = None
     for candidate in _brand_candidates(app):
@@ -342,16 +359,17 @@ def _safe_skill_path(value: str) -> str | None:
     return value if parts[-1] == "SKILL.md" else None
 
 
-def _skill_content_url(skill_md: str) -> str | None:
+def _skill_content_url(skill_md: str, *, raw_base: str = CLI_ANYTHING_RAW_BASE) -> str | None:
     safe_path = _safe_skill_path(skill_md)
     if safe_path:
-        return f"{CLI_ANYTHING_RAW_BASE}/{safe_path}"
+        return f"{raw_base.rstrip('/')}/{safe_path}"
     parsed = urlparse(skill_md)
     if parsed.scheme != "https" or parsed.netloc != "raw.githubusercontent.com":
         return None
-    if not skill_md.startswith(CLI_ANYTHING_RAW_SKILLS_BASE):
+    raw_prefix = raw_base.rstrip("/") + "/"
+    if not skill_md.startswith(raw_prefix):
         return None
-    suffix = skill_md.removeprefix(f"{CLI_ANYTHING_RAW_BASE}/")
+    suffix = skill_md.removeprefix(raw_prefix)
     return skill_md if _safe_skill_path(suffix) else None
 
 
@@ -360,6 +378,12 @@ def _truncate(text: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> str:
         return text
     omitted = len(text) - limit
     return text[:limit] + f"\n\n... truncated {omitted} characters ..."
+
+
+def _catalog_description(app: dict[str, Any]) -> str:
+    """Return catalog copy without implying vendor endorsement."""
+    description = str(app.get("description") or "")
+    return _ENDORSEMENT_WORD_RE.sub("", description).strip()
 
 
 class CliAppManager:
@@ -427,27 +451,22 @@ class CliAppManager:
         return data
 
     def catalog(self, *, force_refresh: bool = False) -> tuple[list[dict[str, Any]], str | None]:
-        registries = [
-            (
-                "harness",
-                self._fetch_registry(
-                    CLI_ANYTHING_REGISTRY_URL,
-                    self._cache_path("harness"),
+        registries: list[tuple[str, str, dict[str, Any]]] = []
+        for source, url, raw_base, required in _CATALOG_SOURCES:
+            try:
+                registry = self._fetch_registry(
+                    url,
+                    self._cache_path(source),
                     force_refresh=force_refresh,
-                ),
-            ),
-            (
-                "public",
-                self._fetch_registry(
-                    CLI_ANYTHING_PUBLIC_REGISTRY_URL,
-                    self._cache_path("public"),
-                    force_refresh=force_refresh,
-                ),
-            ),
-        ]
+                )
+            except Exception:
+                if required:
+                    raise
+                continue
+            registries.append((source, raw_base, registry))
         apps_by_name: dict[str, dict[str, Any]] = {}
         updated_values: list[str] = []
-        for source, registry in registries:
+        for source, raw_base, registry in registries:
             meta = registry.get("meta")
             if isinstance(meta, dict) and isinstance(meta.get("updated"), str):
                 updated_values.append(meta["updated"])
@@ -456,6 +475,7 @@ class CliAppManager:
                     continue
                 entry = dict(row)
                 entry["_source"] = source
+                entry["_raw_base"] = raw_base
                 key = str(entry["name"]).lower()
                 previous = apps_by_name.get(key)
                 if previous:
@@ -467,6 +487,15 @@ class CliAppManager:
                 else:
                     apps_by_name[key] = entry
         return list(apps_by_name.values()), max(updated_values) if updated_values else None
+
+    def _manifest_source(self, app: dict[str, Any]) -> str:
+        source = str(app.get("_source") or "harness")
+        if source == "extensions":
+            return "nanobot-extension"
+        return f"cli-anything:{source}"
+
+    def _trust_registry(self, app: dict[str, Any]) -> str:
+        return "nanobot-extension" if str(app.get("_source") or "") == "extensions" else "cli-anything"
 
     def get_app(self, name: str, *, force_refresh: bool = False) -> dict[str, Any]:
         wanted = name.lower()
@@ -554,7 +583,7 @@ class CliAppManager:
             "name": name,
             "display_name": app.get("display_name") or name,
             "category": app.get("category") or "uncategorized",
-            "description": app.get("description") or "",
+            "description": _catalog_description(app),
             "requires": app.get("requires") or "",
             "source": app.get("_source") or "harness",
             "entry_point": entry_point,
@@ -630,16 +659,16 @@ class CliAppManager:
             app_id=name,
             display_name=str(app.get("display_name") or name),
             version=str(app.get("version") or ""),
-            description=str(app.get("description") or ""),
+            description=_catalog_description(app),
             category=str(app.get("category") or "uncategorized"),
-            source=f"cli-anything:{app.get('_source') or 'harness'}",
+            source=self._manifest_source(app),
             logo_url=logo_url,
             brand_color=brand_color,
             capabilities=capabilities,
             install=install,
             remove=remove,
             trust={
-                "registry": "cli-anything",
+                "registry": self._trust_registry(app),
                 "level": "catalog",
                 "review_status": "catalog_entry",
             },
@@ -673,15 +702,31 @@ class CliAppManager:
             return None
         return args[0]
 
+    @staticmethod
+    def _pip_available() -> bool:
+        """Return True if pip is importable for the current interpreter."""
+        from importlib.util import find_spec
+
+        return find_spec("pip") is not None
+
     def _pip_install_argv(self, app: dict[str, Any], *, update: bool = False) -> list[str]:
         install_cmd = str(app.get("install_cmd") or "")
         if not _is_pip_install_command(install_cmd) or _has_shell_meta(install_cmd):
             raise CliAppError("unsupported pip install command")
         tokens = shlex.split(install_cmd)
         args = tokens[2:] if tokens[:2] == ["pip", "install"] else tokens[4:]
-        prefix = [sys.executable, "-m", "pip", "install"]
+        pip_available = self._pip_available()
+        if pip_available:
+            prefix = [sys.executable, "-m", "pip", "install"]
+        elif shutil.which("uv"):
+            prefix = ["uv", "pip", "install", "--python", sys.executable]
+        else:
+            raise CliAppError("pip is not available and uv is not installed")
         if update:
-            prefix.extend(["--upgrade", "--force-reinstall"])
+            if pip_available:
+                prefix.extend(["--upgrade", "--force-reinstall"])
+            else:
+                prefix.extend(["--upgrade", "--reinstall"])
         return prefix + args
 
     def _pip_uninstall_argv(
@@ -689,18 +734,24 @@ class CliAppManager:
         app: dict[str, Any],
         installed_entry: dict[str, Any] | None = None,
     ) -> list[str]:
+        if self._pip_available():
+            prefix = [sys.executable, "-m", "pip", "uninstall", "-y"]
+        elif shutil.which("uv"):
+            prefix = ["uv", "pip", "uninstall", "--python", sys.executable]
+        else:
+            raise CliAppError("pip is not available and uv is not installed")
         distribution = str((installed_entry or {}).get("pip_distribution") or "").strip()
         if distribution:
-            return [sys.executable, "-m", "pip", "uninstall", "-y", distribution]
+            return [*prefix, distribution]
         uninstall_cmd = str(app.get("uninstall_cmd") or "")
         packages = _pip_uninstall_args_from_command(uninstall_cmd)
         if packages:
-            return [sys.executable, "-m", "pip", "uninstall", "-y", *packages]
+            return [*prefix, *packages]
         package = str(app.get("pip_package") or "").strip() or self._pip_package_from_install(app)
         if not package:
             entry_point = str(app.get("entry_point") or "").strip()
             package = entry_point if entry_point.startswith("cli-anything-") else f"cli-anything-{_brand_key(str(app['name']))}"
-        return [sys.executable, "-m", "pip", "uninstall", "-y", package]
+        return [*prefix, package]
 
     def _npm_argv(self, app: dict[str, Any], action: str) -> list[str]:
         npm = shutil.which("npm")
@@ -714,6 +765,45 @@ class CliAppManager:
         if action == "update":
             return [npm, "install", "-g", package + "@latest"]
         return [npm, "uninstall", "-g", package]
+
+    def _cleanup_stale_npm_install(self, app: dict[str, Any]) -> bool:
+        npm = shutil.which("npm")
+        package = str(app.get("npm_package") or "").strip()
+        if not npm or not package or "/" in package or _SAFE_NPM_DIR_RE.match(package) is None:
+            return False
+        result = self._run_argv([npm, "root", "-g"], timeout=min(self.runtime.install_timeout, 30))
+        if result.returncode != 0:
+            return False
+        root = Path(result.stdout.strip()).expanduser()
+        try:
+            root = root.resolve(strict=True)
+        except OSError:
+            return False
+        targets = [root / package, *root.glob(f".{package}-*")]
+        removed = False
+        for target in targets:
+            try:
+                resolved = target.resolve(strict=False)
+                if not is_path_within(resolved, root) or not target.is_dir():
+                    continue
+                shutil.rmtree(target)
+                removed = True
+            except OSError:
+                continue
+        return removed
+
+    def _retry_stale_npm_install(
+        self,
+        app: dict[str, Any],
+        argv: list[str],
+        result: subprocess.CompletedProcess[str],
+    ) -> subprocess.CompletedProcess[str]:
+        output = f"{result.stderr}\n{result.stdout}"
+        if "ENOTEMPTY" not in output or "rename" not in output:
+            return result
+        if not self._cleanup_stale_npm_install(app):
+            return result
+        return self._run_argv(argv, timeout=self.runtime.install_timeout)
 
     def _split_safe_command(self, app: dict[str, Any], key: str, expected: str) -> list[str]:
         command = str(app.get(key) or "")
@@ -785,7 +875,7 @@ class CliAppManager:
         skill_md = str(app.get("skill_md") or "").strip()
         if not skill_md:
             return None
-        url = _skill_content_url(skill_md)
+        url = _skill_content_url(skill_md, raw_base=str(app.get("_raw_base") or CLI_ANYTHING_RAW_BASE))
         if not url:
             return None
         try:
@@ -802,7 +892,7 @@ class CliAppManager:
         name = str(app.get("name") or "unknown")
         display = str(app.get("display_name") or name)
         entry = str(app.get("entry_point") or f"cli-anything-{name}")
-        description = str(app.get("description") or f"Use {display} from nanobot.")
+        description = _catalog_description(app) or f"Use {display} from nanobot."
         return f"""---
 name: {_safe_skill_name(name)}
 description: >-
@@ -868,6 +958,17 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
         if not self._install_supported(app):
             raise CliAppError("this CLI app uses an unsupported install strategy")
         strategy = self._strategy(app)
+        entry_point = str(app.get("entry_point") or "")
+        if entry_point and shutil.which(entry_point):
+            self._record_installed(app)
+            return self.payload() | {
+                "last_action": {
+                    "ok": True,
+                    "message": f"CLI for {app['display_name']} is already available.",
+                    "installed": True,
+                    "verification": ["entry_point_available", "state_recorded", "managed_paths_present"],
+                }
+            }
         if strategy == "bundled":
             detect_cmd = str(app.get("detect_cmd") or app.get("entry_point") or "")
             if detect_cmd and _command_exists(detect_cmd):
@@ -885,6 +986,8 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
         argv = self._argv_for_action(app, "install")
         assert argv is not None
         result = self._run_argv(argv, timeout=self.runtime.install_timeout)
+        if strategy == "npm" and result.returncode != 0:
+            result = self._retry_stale_npm_install(app, argv, result)
         if result.returncode != 0:
             raise CliAppError(_truncate(result.stderr or result.stdout or "install failed"), status=500)
         self._record_installed(app)
@@ -1018,7 +1121,7 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
         cwd = Path(working_dir).expanduser() if working_dir else self.workspace
         cwd = cwd.resolve(strict=False)
         workspace = self.workspace.resolve(strict=False)
-        if restrict_to_workspace and cwd != workspace and not cwd.is_relative_to(workspace):
+        if restrict_to_workspace and not is_path_within(cwd, workspace):
             raise CliAppError("working_dir is outside the configured workspace")
         return cwd
 

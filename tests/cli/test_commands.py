@@ -9,15 +9,35 @@ import pytest
 from typer.testing import CliRunner
 
 from nanobot.bus.events import OutboundMessage
-from nanobot.cli.commands import app
-from nanobot.providers.factory import make_provider
+from nanobot.cli.commands import _proactive_delivery_metadata, app
 from nanobot.config.schema import Config
 from nanobot.cron.types import CronJob, CronPayload
-from nanobot.providers.factory import ProviderSnapshot
+from nanobot.providers.factory import ProviderSnapshot, make_provider
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
 from nanobot.providers.registry import find_by_name
 
 runner = CliRunner()
+
+
+def test_proactive_websocket_delivery_gets_fresh_turn_id() -> None:
+    metadata = {
+        "webui": True,
+        "webui_turn_id": "turn-that-created-the-reminder",
+        "workspace_scope": {"mode": "default"},
+    }
+
+    out = _proactive_delivery_metadata(
+        "websocket",
+        metadata,
+        turn_seed="cron:drink-water",
+        source_label="drink water",
+    )
+
+    assert out["webui"] is True
+    assert out["workspace_scope"] == {"mode": "default"}
+    assert out["webui_turn_id"].startswith("cron:drink-water:")
+    assert out["webui_turn_id"] != metadata["webui_turn_id"]
+    assert out["_webui_message_source"] == {"kind": "cron", "label": "drink water"}
 
 
 def _fake_provider():
@@ -469,6 +489,28 @@ def test_config_auto_detects_xiaomi_mimo_from_model_keyword():
     assert config.get_api_base() == "https://api.xiaomimimo.com/v1"
 
 
+def test_config_explicit_minimax_anthropic_provider_uses_default_api_base():
+    config = Config.model_validate(
+        {
+            "agents": {
+                "defaults": {
+                    "provider": "minimax_anthropic",
+                    "model": "MiniMax-M2.7-highspeed",
+                }
+            },
+            "providers": {
+                "minimaxAnthropic": {
+                    "apiKey": "test-key",
+                }
+            },
+        }
+    )
+
+    assert config.get_provider_name() == "minimax_anthropic"
+    assert config.get_api_key() == "test-key"
+    assert config.get_api_base() == "https://api.minimax.io/anthropic"
+
+
 def test_config_auto_detects_ollama_from_local_api_base():
     config = Config.model_validate(
         {
@@ -520,8 +562,8 @@ def test_openai_compat_provider_passes_model_through():
 
 
 def test_make_provider_uses_github_copilot_backend():
-    from nanobot.providers.factory import make_provider
     from nanobot.config.schema import Config
+    from nanobot.providers.factory import make_provider
 
     config = Config.model_validate(
         {
@@ -930,6 +972,33 @@ def test_heartbeat_retains_recent_messages_by_default():
     assert config.gateway.heartbeat.keep_recent_messages == 8
 
 
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        ("", False),
+        ("# Title\n\n## Active Tasks\n", False),
+        ("<!--\nmulti-line\ncomment\n-->\n", False),  # block comment, not tasks
+        ("<!-- single line -->\n", False),
+        ("## Active Tasks\n\n- water the plants\n", True),
+        ("## Active Tasks\n\n### Garden\n\n- water the plants\n", True),
+        ("## Notes\n\nsome random note\n", False),
+        ("stray text before any heading\n## Active Tasks\n\n- task\n", True),
+        ("stray text before any heading\n", False),
+    ],
+)
+def test_heartbeat_has_active_tasks(content, expected):
+    from nanobot.cli.commands import _heartbeat_has_active_tasks
+
+    assert _heartbeat_has_active_tasks(content) is expected
+
+
+def test_heartbeat_skips_bundled_template():
+    from nanobot.cli.commands import _heartbeat_has_active_tasks
+    from nanobot.utils.helpers import load_bundled_template
+
+    assert _heartbeat_has_active_tasks(load_bundled_template("HEARTBEAT.md")) is False
+
+
 def _write_instance_config(tmp_path: Path) -> Path:
     config_file = tmp_path / "instance" / "config.json"
     config_file.parent.mkdir(parents=True)
@@ -1210,7 +1279,7 @@ def test_gateway_cron_evaluator_receives_scheduled_reminder_context(
     monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
     monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _StopAfterCronSetup)
     monkeypatch.setattr(
-        "nanobot.utils.evaluator.evaluate_response",
+        "nanobot.cli.commands.evaluate_response",
         _capture_evaluate_response,
     )
 
@@ -1267,6 +1336,41 @@ def test_gateway_cron_evaluator_receives_scheduled_reminder_context(
             "_channel_delivery": True,
         }
     ]
+
+    bus.publish_outbound.reset_mock()
+    old_turn_id = "turn-that-created-the-reminder"
+    websocket_job = CronJob(
+        id="drink-water",
+        name="drink water",
+        payload=CronPayload(
+            message="Remind me to drink water.",
+            deliver=True,
+            channel="websocket",
+            to="chat-1",
+            channel_meta={
+                "webui": True,
+                "webui_turn_id": old_turn_id,
+                "workspace_scope": {"mode": "default"},
+            },
+            session_key="websocket:chat-1",
+        ),
+    )
+
+    response = asyncio.run(cron.on_job(websocket_job))
+
+    assert response == "Time to stretch."
+    bus.publish_outbound.assert_awaited_once()
+    delivered = bus.publish_outbound.await_args.args[0]
+    assert delivered.channel == "websocket"
+    assert delivered.chat_id == "chat-1"
+    assert delivered.metadata["webui"] is True
+    assert delivered.metadata["workspace_scope"] == {"mode": "default"}
+    assert delivered.metadata["webui_turn_id"].startswith("cron:drink-water:")
+    assert delivered.metadata["webui_turn_id"] != old_turn_id
+    assert delivered.metadata["_webui_message_source"] == {
+        "kind": "cron",
+        "label": "drink water",
+    }
 
 
 def test_gateway_cron_job_suppresses_intermediate_progress(
@@ -1342,7 +1446,7 @@ def test_gateway_cron_job_suppresses_intermediate_progress(
     monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
     monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _StopAfterCronSetup)
     monkeypatch.setattr(
-        "nanobot.utils.evaluator.evaluate_response",
+        "nanobot.cli.commands.evaluate_response",
         _always_reject,
     )
 
@@ -1521,6 +1625,94 @@ def test_gateway_cli_port_overrides_configured_port(monkeypatch, tmp_path: Path)
     assert "port 18792" in result.stdout
 
 
+def test_configure_desktop_gateway_forces_local_websocket_only() -> None:
+    from nanobot.cli.commands import _configure_desktop_gateway
+
+    config = Config()
+    config.channels.__pydantic_extra__ = {
+        "telegram": {"enabled": True, "token": "x"},
+        "websocket": {"enabled": False, "port": 8765},
+    }
+
+    _configure_desktop_gateway(
+        config,
+        webui_port=29888,
+        webui_socket="/tmp/nanobot-test.sock",
+        token_issue_secret="secret",
+    )
+
+    extras = config.channels.__pydantic_extra__ or {}
+    assert config.gateway.host == "127.0.0.1"
+    assert config.gateway.port == 29888
+    assert config.gateway.heartbeat.enabled is False
+    assert extras["telegram"]["enabled"] is False
+    assert extras["websocket"]["enabled"] is True
+    assert extras["websocket"]["host"] == "127.0.0.1"
+    assert extras["websocket"]["port"] == 29888
+    assert extras["websocket"]["unix_socket_path"] == "/tmp/nanobot-test.sock"
+    assert extras["websocket"]["token_issue_secret"] == "secret"
+    assert extras["websocket"]["websocket_requires_token"] is True
+
+
+def test_load_or_create_desktop_config_bootstraps_without_api_key(tmp_path: Path) -> None:
+    from nanobot.cli.commands import _load_or_create_desktop_config
+
+    config_path = tmp_path / "config.json"
+    loaded = _load_or_create_desktop_config(
+        str(config_path),
+        str(tmp_path / "workspace"),
+    )
+
+    assert loaded.agents.defaults.provider == "openai_codex"
+    assert loaded.agents.defaults.model == "openai-codex/gpt-5.1-codex"
+    assert loaded.agents.defaults.model_preset is None
+    assert config_path.exists()
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["agents"]["defaults"]["provider"] == ""
+    assert saved["agents"]["defaults"]["model"] == ""
+    assert make_provider(loaded).get_default_model() == "openai-codex/gpt-5.1-codex"
+
+
+def test_load_or_create_desktop_config_repairs_existing_unconfigured_default(
+    tmp_path: Path,
+) -> None:
+    from nanobot.cli.commands import _load_or_create_desktop_config
+    from nanobot.config.loader import save_config
+
+    config_path = tmp_path / "config.json"
+    save_config(Config(), config_path)
+
+    loaded = _load_or_create_desktop_config(str(config_path), None)
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert loaded.agents.defaults.provider == "openai_codex"
+    assert loaded.agents.defaults.model == "openai-codex/gpt-5.1-codex"
+    assert saved["agents"]["defaults"]["provider"] == ""
+    assert saved["agents"]["defaults"]["model"] == ""
+    assert make_provider(loaded).get_default_model() == "openai-codex/gpt-5.1-codex"
+
+
+def test_load_or_create_desktop_config_unwinds_persisted_bootstrap(
+    tmp_path: Path,
+) -> None:
+    from nanobot.cli.commands import _load_or_create_desktop_config
+    from nanobot.config.loader import save_config
+
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.agents.defaults.provider = "openai_codex"
+    config.agents.defaults.model = "openai-codex/gpt-5.1-codex"
+    save_config(config, config_path)
+
+    loaded = _load_or_create_desktop_config(str(config_path), None)
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert loaded.agents.defaults.provider == "openai_codex"
+    assert loaded.agents.defaults.model == "openai-codex/gpt-5.1-codex"
+    assert saved["agents"]["defaults"]["provider"] == ""
+    assert saved["agents"]["defaults"]["model"] == ""
+
+
 def test_gateway_health_endpoint_binds_and_serves_expected_responses(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1528,14 +1720,6 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
     config = Config()
     config.gateway.port = 18791
     captured: dict[str, object] = {}
-
-    class _FakeDream:
-        model = None
-        max_batch_size = 0
-        max_iterations = 0
-
-        async def run(self) -> None:
-            return None
 
     class _FakeSessionManager:
         def flush_all(self) -> int:
@@ -1548,7 +1732,6 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
         def __init__(self, **_kwargs) -> None:
             self.model = "test-model"
             self.provider = object()
-            self.dream = _FakeDream()
             self.sessions = _FakeSessionManager()
 
         def llm_runtime(self) -> None:
@@ -1589,21 +1772,42 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
         def register_system_job(self, _job) -> None:
             return None
 
-    class _FakeHeartbeatService:
-        def __init__(self, **_kwargs) -> None:
+    class _FakeServer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def serve_forever(self) -> None:
+            raise _StopGatewayError("stop")
+
+    async def _fake_start_server(handler, host: str, port: int):
+        captured["handler"] = handler
+        captured["host"] = host
+        captured["port"] = port
+        return _FakeServer()
+
+    class _FakeReader:
+        def __init__(self, payload: bytes) -> None:
+            self.payload = payload
+
+        async def read(self, _size: int) -> bytes:
+            return self.payload
+
+    class _FakeWriter:
+        def __init__(self) -> None:
+            self.output = b""
+            self.closed = False
+
+        def write(self, data: bytes) -> None:
+            self.output += data
+
+        async def drain(self) -> None:
             return None
 
-        async def start(self) -> None:
-            return None
-
-        def stop(self) -> None:
-            return None
-
-    class _FakeWebhookServer:
-        def __init__(self, **kwargs) -> None:
-            captured.update(kwargs)
-            self.ephemeral = False
-            self.secret = kwargs.get("secret") or "test-secret"
+        def close(self) -> None:
+            self.closed = True
 
         async def start(self) -> None:
             raise _StopGatewayError("stop")
@@ -1620,8 +1824,7 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
     monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
     monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
     monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCronService)
-    monkeypatch.setattr("nanobot.heartbeat.service.HeartbeatService", _FakeHeartbeatService)
-    monkeypatch.setattr("nanobot.api.webhook.WebhookServer", _FakeWebhookServer)
+    monkeypatch.setattr("asyncio.start_server", _fake_start_server)
 
     result = runner.invoke(app, ["gateway", "--config", str(config_file)])
 

@@ -121,6 +121,7 @@ def _seed_catalog(manager: CliAppManager) -> None:
     }
     _write_cache(manager._cache_path("harness"), harness)
     _write_cache(manager._cache_path("public"), public)
+    _write_cache(manager._cache_path("extensions"), {"meta": {}, "clis": []})
 
 
 def test_payload_merges_catalog_and_marks_unsupported_installs(tmp_path: Path) -> None:
@@ -143,6 +144,8 @@ def test_payload_merges_catalog_and_marks_unsupported_installs(tmp_path: Path) -
     assert apps["gimp"]["install_supported"] is True
     assert apps["gimp"]["source"] == "harness+public"
     assert apps["gimp"]["description"] == "Public duplicate entry"
+    assert apps["feishu"]["description"] == "Lark CLI"
+    assert apps["feishu"]["manifest"]["description"] == "Lark CLI"
     assert apps["clibrowser"]["install_supported"] is False
     assert apps["jimeng"]["install_supported"] is False
     assert apps["suno"]["install_supported"] is True
@@ -185,12 +188,86 @@ def test_payload_uses_anygen_official_domain_for_logo(tmp_path: Path) -> None:
             ],
         },
     )
+    _write_cache(manager._cache_path("extensions"), {"meta": {}, "clis": []})
 
     payload = manager.payload()
 
     app = payload["apps"][0]
     assert app["name"] == "anygen"
     assert app["logo_url"] == "https://www.google.com/s2/favicons?domain=anygen.io&sz=64"
+
+
+def test_payload_includes_nanobot_extension_registry(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    _write_cache(manager._cache_path("harness"), {"meta": {"updated": "2026-04-16"}, "clis": []})
+    _write_cache(manager._cache_path("public"), {"meta": {"updated": "2026-04-18"}, "clis": []})
+    _write_cache(
+        manager._cache_path("extensions"),
+        {
+            "meta": {"updated": "2026-05-29"},
+            "clis": [
+                {
+                    "name": "hyperframes",
+                    "display_name": "HyperFrames",
+                    "version": "latest",
+                    "description": "HTML-to-MP4 motion graphics CLI",
+                    "category": "video",
+                    "package_manager": "npm",
+                    "npm_package": "hyperframes",
+                    "install_cmd": "npm install -g hyperframes",
+                    "entry_point": "hyperframes",
+                    "logo_url": "https://raw.githubusercontent.com/heygen-com/hyperframes/main/assets/logo.png",
+                    "brand_color": "#111827",
+                    "skill_md": "skills/hyperframes/SKILL.md",
+                }
+            ],
+        },
+    )
+
+    payload = manager.payload()
+
+    assert payload["catalog_updated_at"] == "2026-05-29"
+    app = payload["apps"][0]
+    assert app["name"] == "hyperframes"
+    assert app["source"] == "extensions"
+    assert app["logo_url"] == "https://raw.githubusercontent.com/heygen-com/hyperframes/main/assets/logo.png"
+    assert app["brand_color"] == "#111827"
+    assert app["install_supported"] is True
+    assert app["manifest"]["source"] == "nanobot-extension"
+    assert app["manifest"]["trust"]["registry"] == "nanobot-extension"
+
+
+def test_optional_extension_registry_failure_does_not_break_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path)
+    _write_cache(
+        manager._cache_path("harness"),
+        {
+            "meta": {"updated": "2026-04-16"},
+            "clis": [
+                {
+                    "name": "gimp",
+                    "display_name": "GIMP",
+                    "description": "Image editing",
+                    "install_cmd": "pip install cli-anything-gimp",
+                    "entry_point": "cli-anything-gimp",
+                }
+            ],
+        },
+    )
+    _write_cache(manager._cache_path("public"), {"meta": {"updated": "2026-04-18"}, "clis": []})
+
+    def fail_get(*args, **kwargs):
+        raise RuntimeError("network unavailable")
+
+    monkeypatch.setattr("nanobot.apps.cli.service.httpx.get", fail_get)
+
+    payload = manager.payload()
+
+    assert payload["catalog_updated_at"] == "2026-04-18"
+    assert [app["name"] for app in payload["apps"]] == ["gimp"]
 
 
 def test_install_dispatches_safe_pip_and_installs_skill(
@@ -206,6 +283,7 @@ def test_install_dispatches_safe_pip_and_installs_skill(
         return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
 
     monkeypatch.setattr(manager, "_run_argv", fake_run)
+    monkeypatch.setattr(manager, "_pip_available", staticmethod(lambda: True))
     monkeypatch.setattr(
         manager,
         "_fetch_skill_content",
@@ -223,6 +301,101 @@ def test_install_dispatches_safe_pip_and_installs_skill(
     skill = manager.workspace / "skills" / "cli-app-gimp" / "SKILL.md"
     assert skill.is_file()
     assert 'run_cli_app` tool with `name="gimp"' in skill.read_text(encoding="utf-8")
+
+
+def test_install_records_available_cli_without_reinstalling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path)
+    _seed_catalog(manager)
+    resolved = tmp_path / "bin" / "lark-cli"
+    resolved.parent.mkdir()
+    resolved.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def fail_run(argv: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(f"unexpected install command: {argv}")
+
+    monkeypatch.setattr(manager, "_run_argv", fail_run)
+    monkeypatch.setattr(
+        "nanobot.apps.cli.service.shutil.which",
+        lambda command: str(resolved) if command == "lark-cli" else None,
+    )
+
+    payload = manager.install("feishu")
+
+    assert payload["last_action"]["ok"] is True
+    assert payload["last_action"]["installed"] is True
+    assert "entry_point_available" in payload["last_action"]["verification"]
+    installed = json.loads(manager.installed_path.read_text(encoding="utf-8"))["apps"]
+    assert installed["feishu"]["entry_point_path"] == str(resolved)
+    skill = manager.workspace / "skills" / "cli-app-feishu" / "SKILL.md"
+    assert skill.is_file()
+    assert 'run_cli_app` tool with `name="feishu"' in skill.read_text(encoding="utf-8")
+
+
+def test_install_recovers_stale_npm_global_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path)
+    _write_cache(manager._cache_path("harness"), {"meta": {"updated": "2026-04-16"}, "clis": []})
+    _write_cache(manager._cache_path("public"), {"meta": {"updated": "2026-04-18"}, "clis": []})
+    _write_cache(
+        manager._cache_path("extensions"),
+        {
+            "meta": {"updated": "2026-05-29"},
+            "clis": [
+                {
+                    "name": "hyperframes",
+                    "display_name": "HyperFrames",
+                    "package_manager": "npm",
+                    "npm_package": "hyperframes",
+                    "install_cmd": "npm install -g hyperframes",
+                    "entry_point": "hyperframes",
+                    "skill_md": "skills/hyperframes/SKILL.md",
+                }
+            ],
+        },
+    )
+    npm = str(tmp_path / "bin" / "npm")
+    global_root = tmp_path / "global"
+    stale_package = global_root / "hyperframes"
+    stale_temp = global_root / ".hyperframes-broken"
+    stale_package.mkdir(parents=True)
+    stale_temp.mkdir()
+    install_attempts = 0
+
+    def fake_run(argv: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+        nonlocal install_attempts
+        if argv == [npm, "root", "-g"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=str(global_root), stderr="")
+        if argv == [npm, "install", "-g", "hyperframes"]:
+            install_attempts += 1
+            if install_attempts == 1:
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    stdout="",
+                    stderr="npm error ENOTEMPTY\nnpm error syscall rename",
+                )
+            return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    monkeypatch.setattr(manager, "_run_argv", fake_run)
+    monkeypatch.setattr(
+        "nanobot.apps.cli.service.shutil.which",
+        lambda command: npm if command == "npm" else None,
+    )
+
+    payload = manager.install("hyperframes")
+
+    assert install_attempts == 2
+    assert not stale_package.exists()
+    assert not stale_temp.exists()
+    assert payload["last_action"]["ok"] is True
+    installed = json.loads(manager.installed_path.read_text(encoding="utf-8"))["apps"]
+    assert installed["hyperframes"]["strategy"] == "npm"
 
 
 def test_install_records_entry_point_path_and_pip_distribution(
@@ -331,6 +504,38 @@ def test_fetch_skill_content_allows_cli_anything_raw_skill_url(
     ]
 
 
+def test_fetch_skill_content_uses_extension_raw_base_for_relative_skills(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path)
+    seen: list[str] = []
+
+    class Response:
+        text = "---\nname: hyperframes\ndescription: HyperFrames\n---\n# HyperFrames\n"
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    def fake_get(url: str, **kwargs):
+        seen.append(url)
+        return Response()
+
+    monkeypatch.setattr("nanobot.apps.cli.service.httpx.get", fake_get)
+
+    content = manager._fetch_skill_content({
+        "name": "hyperframes",
+        "skill_md": "skills/hyperframes/SKILL.md",
+        "_raw_base": "https://raw.githubusercontent.com/Re-bin/nanobot-extension/main",
+    })
+
+    assert content and "# HyperFrames" in content
+    assert seen == [
+        "https://raw.githubusercontent.com/Re-bin/nanobot-extension/main/skills/hyperframes/SKILL.md"
+    ]
+
+
 def test_uninstall_removes_installed_state_and_generated_skill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -368,6 +573,7 @@ def test_uninstall_uses_safe_python_m_pip_uninstall_command(
         return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
 
     monkeypatch.setattr(manager, "_run_argv", fake_run)
+    monkeypatch.setattr(manager, "_pip_available", staticmethod(lambda: True))
 
     payload = manager.uninstall("suno")
 
@@ -395,6 +601,7 @@ def test_uninstall_uses_recorded_pip_distribution(
         return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
 
     monkeypatch.setattr(manager, "_run_argv", fake_run)
+    monkeypatch.setattr(manager, "_pip_available", staticmethod(lambda: True))
 
     payload = manager.uninstall("gimp")
 
@@ -417,6 +624,7 @@ def test_uninstall_keeps_state_when_entry_point_still_available(
         "_run_argv",
         lambda argv, *, timeout: subprocess.CompletedProcess(argv, 0, stdout="ok", stderr=""),
     )
+    monkeypatch.setattr(manager, "_pip_available", staticmethod(lambda: True))
     monkeypatch.setattr(
         "nanobot.apps.cli.service.shutil.which",
         lambda command: "/usr/local/bin/cli-anything-gimp" if command == "cli-anything-gimp" else None,
@@ -573,3 +781,95 @@ def test_run_blocks_working_dir_outside_workspace(tmp_path: Path) -> None:
 
     with pytest.raises(CliAppError, match="outside the configured workspace"):
         manager.run("gimp", working_dir="/etc", restrict_to_workspace=True)
+
+
+def test_install_uses_uv_pip_when_pip_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path)
+    _seed_catalog(manager)
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(CliAppManager, "_pip_available", staticmethod(lambda: False))
+    monkeypatch.setattr(
+        "nanobot.apps.cli.service.shutil.which",
+        lambda command: "/usr/bin/uv" if command == "uv" else None,
+    )
+    monkeypatch.setattr(manager, "_run_argv", fake_run)
+    monkeypatch.setattr(manager, "_fetch_skill_content", lambda app: None)
+
+    manager.install("gimp")
+
+    assert calls[0][:6] == [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "cli-anything-gimp",
+    ]
+
+
+def test_update_uses_uv_pip_reinstall_when_pip_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path)
+    monkeypatch.setattr(CliAppManager, "_pip_available", staticmethod(lambda: False))
+    monkeypatch.setattr(
+        "nanobot.apps.cli.service.shutil.which",
+        lambda command: "/usr/bin/uv" if command == "uv" else None,
+    )
+
+    argv = manager._pip_install_argv(
+        {"name": "gimp", "install_cmd": "pip install cli-anything-gimp"},
+        update=True,
+    )
+
+    assert argv == [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "--upgrade",
+        "--reinstall",
+        "cli-anything-gimp",
+    ]
+
+
+def test_uninstall_uses_uv_pip_when_pip_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path)
+    _seed_catalog(manager)
+    manager._save_installed({"suno": {"entry_point": "suno"}})
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(CliAppManager, "_pip_available", staticmethod(lambda: False))
+    monkeypatch.setattr(
+        "nanobot.apps.cli.service.shutil.which",
+        lambda command: "/usr/bin/uv" if command == "uv" else None,
+    )
+    monkeypatch.setattr(manager, "_run_argv", fake_run)
+
+    manager.uninstall("suno")
+
+    assert calls[0] == [
+        "uv",
+        "pip",
+        "uninstall",
+        "--python",
+        sys.executable,
+        "suno-cli",
+    ]

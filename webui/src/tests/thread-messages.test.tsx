@@ -9,7 +9,7 @@ import {
 import type { UIMessage } from "@/lib/types";
 
 describe("ThreadMessages", () => {
-  it("groups consecutive reasoning and tool rows into one cluster before the answer", () => {
+  it("groups consecutive reasoning and tool rows into one timeline before the answer", () => {
     const messages: UIMessage[] = [
       {
         id: "r1",
@@ -55,7 +55,7 @@ describe("ThreadMessages", () => {
     expect(rows[1]).toHaveClass("mt-4");
   });
 
-  it("starts a new activity cluster when the activity segment changes", () => {
+  it("keeps file edits as their own activity row inside a turn", () => {
     const messages: UIMessage[] = [
       {
         id: "r1",
@@ -95,17 +95,14 @@ describe("ThreadMessages", () => {
 
     const units = buildDisplayUnits(messages);
 
-    expect(units).toHaveLength(2);
-    expect(units[0].type === "cluster" ? units[0].messages.map((m) => m.id) : []).toEqual([
-      "r1",
-      "t1",
-    ]);
-    expect(units[1].type === "cluster" ? units[1].messages.map((m) => m.id) : []).toEqual([
-      "r2",
-    ]);
+    expect(units).toHaveLength(3);
+    expect(units.map((unit) => unit.type)).toEqual(["activity", "activity", "activity"]);
+    expect(units[0].type === "activity" ? units[0].messages.map((m) => m.id) : []).toEqual(["r1"]);
+    expect(units[1].type === "activity" ? units[1].messages.map((m) => m.id) : []).toEqual(["t1"]);
+    expect(units[2].type === "activity" ? units[2].messages.map((m) => m.id) : []).toEqual(["r2"]);
   });
 
-  it("does not split ordinary tool activity just because segment ids changed", () => {
+  it("keeps ordinary tool activity in one Thought block across segment ids", () => {
     const messages: UIMessage[] = [
       {
         id: "r1",
@@ -146,7 +143,7 @@ describe("ThreadMessages", () => {
     const units = buildDisplayUnits(messages);
 
     expect(units).toHaveLength(1);
-    expect(units[0].type === "cluster" ? units[0].messages.map((m) => m.id) : []).toEqual([
+    expect(units[0].type === "activity" ? units[0].messages.map((m) => m.id) : []).toEqual([
       "r1",
       "t1",
       "r2",
@@ -154,7 +151,48 @@ describe("ThreadMessages", () => {
     ]);
   });
 
-  it("only marks the current activity cluster as live while streaming", () => {
+  it("moves orphan trailing activity before the completed assistant answer", () => {
+    const messages: UIMessage[] = [
+      {
+        id: "r1",
+        role: "assistant",
+        content: "",
+        reasoning: "I should do a fresh search.",
+        activitySegmentId: "seg-1",
+        createdAt: 1,
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Let me search the latest data.",
+        createdAt: 2,
+      },
+      {
+        id: "t1",
+        role: "tool",
+        kind: "trace",
+        content: "Searching query: HKUDS/nanobot GitHub stars",
+        traces: ["Searching query: HKUDS/nanobot GitHub stars"],
+        activitySegmentId: "seg-2",
+        createdAt: 3,
+      },
+    ];
+
+    const units = buildDisplayUnits(messages);
+
+    expect(units).toHaveLength(3);
+    expect(units[0].type === "activity" ? units[0].messages.map((m) => m.id) : []).toEqual(["r1"]);
+    expect(units[1].type === "activity" ? units[1].messages.map((m) => m.id) : []).toEqual(["t1"]);
+    expect(units[2]).toMatchObject({
+      type: "message",
+      message: {
+        id: "a1",
+        content: "Let me search the latest data.",
+      },
+    });
+  });
+
+  it("only marks the current activity timeline as live while streaming", () => {
     const messages: UIMessage[] = [
       {
         id: "r1",
@@ -197,12 +235,11 @@ describe("ThreadMessages", () => {
 
     render(<ThreadMessages messages={messages} isStreaming />);
 
-    expect(screen.getByRole("button", { name: /edited foo\.txt/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /editing foo\.txt/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /working/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/edited foo\.txt/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/editing foo\.txt/i)).not.toBeInTheDocument();
   });
 
-  it("folds final answer reasoning into the preceding activity cluster", () => {
+  it("folds final answer reasoning into the preceding activity timeline", () => {
     const messages: UIMessage[] = [
       {
         id: "r1",
@@ -234,21 +271,21 @@ describe("ThreadMessages", () => {
     const units = buildDisplayUnits(messages);
 
     expect(units).toHaveLength(2);
-    expect(units[0]).toMatchObject({ type: "cluster" });
-    expect(units[0].type === "cluster" ? units[0].messages.map((m) => m.id) : []).toEqual([
+    expect(units[0]).toMatchObject({ type: "activity" });
+    expect(units[0].type === "activity" ? units[0].messages.map((m) => m.id) : []).toEqual([
       "r1",
       "t1",
       "a1-reasoning",
     ]);
-    expect(units[0].type === "cluster" ? units[0].messages.at(-1)?.latencyMs : undefined).toBe(9_200);
+    expect(units[0].type === "activity" ? units[0].messages.at(-1)?.latencyMs : undefined).toBe(9_200);
     expect(units[1]).toMatchObject({
-      type: "single",
+      type: "message",
       message: {
         id: "a1",
         content: "final answer",
       },
     });
-    if (units[1].type === "single") {
+    if (units[1].type === "message") {
       expect(units[1].message).not.toHaveProperty("reasoning");
     }
 
@@ -258,7 +295,292 @@ describe("ThreadMessages", () => {
     expect(screen.getByText("final answer")).toBeInTheDocument();
   });
 
-  it("passes assistant turn latency to the preceding completed activity cluster", () => {
+  it("keeps late activity after the live assistant answer while streaming", () => {
+    const messages: UIMessage[] = [
+      {
+        id: "t0",
+        role: "tool",
+        kind: "trace",
+        content: "Thinking",
+        traces: ["Thinking"],
+        activitySegmentId: "seg-live",
+        createdAt: 1,
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "partial answer",
+        isStreaming: true,
+        createdAt: 2,
+      },
+      {
+        id: "t1",
+        role: "tool",
+        kind: "trace",
+        content: "Reading api.github.com/repos/NousResearch/hermes-agent",
+        traces: ["Reading api.github.com/repos/NousResearch/hermes-agent"],
+        activitySegmentId: "seg-live",
+        createdAt: 3,
+      },
+    ];
+
+    const units = buildDisplayUnits(messages, true);
+
+    expect(units).toHaveLength(3);
+    expect(units[0].type === "activity" ? units[0].messages.map((m) => m.id) : []).toEqual(["t0"]);
+    expect(units[1]).toMatchObject({
+      type: "message",
+      message: {
+        id: "a1",
+        content: "partial answer",
+      },
+    });
+    expect(units[2].type === "activity" ? units[2].messages.map((m) => m.id) : []).toEqual(["t1"]);
+
+    render(<ThreadMessages messages={messages} isStreaming />);
+
+    const answer = screen.getByText("partial answer");
+    const liveActivity = screen.getByRole("button", { name: /working/i });
+    expect(answer.compareDocumentPosition(liveActivity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("moves late activity before a completed assistant answer", () => {
+    const messages: UIMessage[] = [
+      {
+        id: "r1",
+        role: "assistant",
+        content: "",
+        reasoning: "checking weather",
+        activitySegmentId: "seg-late",
+        createdAt: 1,
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Hong Kong is hot today.",
+        latencyMs: 161_000,
+        createdAt: 2,
+      },
+      {
+        id: "t1",
+        role: "tool",
+        kind: "trace",
+        content: "Reading hko.gov.hk/en/wxinfo/currwx/current.htm",
+        traces: ["Reading hko.gov.hk/en/wxinfo/currwx/current.htm"],
+        activitySegmentId: "seg-late",
+        createdAt: 3,
+      },
+    ];
+
+    const units = buildDisplayUnits(messages);
+
+    expect(units).toHaveLength(3);
+    expect(units[0].type === "activity" ? units[0].messages.map((m) => m.id) : []).toEqual(["r1"]);
+    expect(units[1].type === "activity" ? units[1].messages.map((m) => m.id) : []).toEqual(["t1"]);
+    expect(units[2]).toMatchObject({
+      type: "message",
+      message: {
+        id: "a1",
+        content: "Hong Kong is hot today.",
+      },
+    });
+
+    render(<ThreadMessages messages={messages} isStreaming={false} />);
+
+    const answer = screen.getByText("Hong Kong is hot today.");
+    const laterActivity = screen.getAllByText(/thought/i).at(-1);
+    expect(laterActivity).toBeTruthy();
+    expect(laterActivity!.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("does not leave a completed web-search thought below the final answer", () => {
+    const messages: UIMessage[] = [
+      {
+        id: "user",
+        role: "user",
+        content: "最近科隆major开打了，你知道不？",
+        createdAt: 1,
+      },
+      {
+        id: "thought",
+        role: "assistant",
+        content: "",
+        reasoning: "I should verify the current event details.",
+        activitySegmentId: "seg-major",
+        createdAt: 2,
+      },
+      {
+        id: "answer",
+        role: "assistant",
+        content: "知道，IEM Cologne Major 2026 今天开打了。",
+        latencyMs: 18_000,
+        createdAt: 3,
+      },
+      {
+        id: "web",
+        role: "tool",
+        kind: "trace",
+        content: "Searching query: 2026 Cologne Major esports started 科隆 Major 开打了 2026",
+        traces: ["Searching query: 2026 Cologne Major esports started 科隆 Major 开打了 2026"],
+        activitySegmentId: "seg-major",
+        createdAt: 4,
+      },
+    ];
+
+    render(<ThreadMessages messages={messages} isStreaming={false} />);
+
+    const thought = screen.getAllByText(/thought/i).at(-1);
+    const answer = screen.getByText("知道，IEM Cologne Major 2026 今天开打了。");
+    expect(thought).toBeTruthy();
+    expect(thought!.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("normalizes completed prior turns while the next user turn is streaming", () => {
+    const messages: UIMessage[] = [
+      {
+        id: "thought",
+        role: "assistant",
+        content: "",
+        reasoning: "I should verify the current event details.",
+        activitySegmentId: "seg-major",
+        createdAt: 1,
+      },
+      {
+        id: "answer",
+        role: "assistant",
+        content: "Yep — IEM Cologne Major 2026 is in Cologne.",
+        latencyMs: 20_000,
+        createdAt: 2,
+      },
+      {
+        id: "web",
+        role: "tool",
+        kind: "trace",
+        content: "Searching query: site:counter-strike.net majors 2026",
+        traces: ["Searching query: site:counter-strike.net majors 2026"],
+        activitySegmentId: "seg-major",
+        createdAt: 3,
+      },
+      {
+        id: "next-user",
+        role: "user",
+        content: "看一下目前的赛果，整个表哥",
+        createdAt: 4,
+      },
+    ];
+
+    const units = buildDisplayUnits(messages, true);
+
+    expect(units).toHaveLength(4);
+    expect(units[0].type === "activity" ? units[0].messages.map((m) => m.id) : []).toEqual([
+      "thought",
+    ]);
+    expect(units[1].type === "activity" ? units[1].messages.map((m) => m.id) : []).toEqual([
+      "web",
+    ]);
+    expect(units[2]).toMatchObject({
+      type: "message",
+      message: { id: "answer" },
+    });
+    expect(units[3]).toMatchObject({
+      type: "message",
+      message: { id: "next-user" },
+    });
+  });
+
+  it("orders live turn activity by causal turn sequence before the final answer", () => {
+    const messages: UIMessage[] = [
+      {
+        id: "web-1",
+        role: "tool",
+        kind: "trace",
+        content: "Searching query: 2026 Counter-Strike 2 Major location",
+        traces: ["Searching query: 2026 Counter-Strike 2 Major location"],
+        turnId: "turn-major",
+        turnSeq: 3,
+        activitySegmentId: "seg-1",
+        createdAt: 1,
+      },
+      {
+        id: "answer",
+        role: "assistant",
+        content: "Yep — IEM Cologne Major 2026 is in Cologne.",
+        isStreaming: true,
+        turnId: "turn-major",
+        turnSeq: 84,
+        createdAt: 3,
+      },
+      {
+        id: "web-2",
+        role: "tool",
+        kind: "trace",
+        content: "Searching query: site:counter-strike.net majors 2026",
+        traces: ["Searching query: site:counter-strike.net majors 2026"],
+        turnId: "turn-major",
+        turnSeq: 83,
+        activitySegmentId: "seg-2",
+        createdAt: 2,
+      },
+    ];
+
+    const units = buildDisplayUnits(messages, true);
+
+    expect(units).toHaveLength(2);
+    expect(units[0].type === "activity" ? units[0].messages.map((m) => m.id) : []).toEqual([
+      "web-1",
+      "web-2",
+    ]);
+    expect(units[1]).toMatchObject({
+      type: "message",
+      message: { id: "answer" },
+    });
+  });
+
+  it("renders interrupted pre-tool text as activity before the final answer", () => {
+    const messages: UIMessage[] = [
+      {
+        id: "prelude",
+        role: "assistant",
+        content: "",
+        reasoning: "I will inspect first.",
+        isStreaming: false,
+        activitySegmentId: "seg-1",
+        createdAt: 1,
+      },
+      {
+        id: "tool",
+        role: "tool",
+        kind: "trace",
+        content: 'exec({"cmd":"ls"})',
+        traces: ['exec({"cmd":"ls"})'],
+        activitySegmentId: "seg-1",
+        createdAt: 2,
+      },
+      {
+        id: "final",
+        role: "assistant",
+        content: "Done. Open index.html to play.",
+        createdAt: 3,
+      },
+    ];
+
+    const units = buildDisplayUnits(messages);
+
+    expect(units).toHaveLength(2);
+    expect(units[0].type === "activity" ? units[0].messages.map((m) => m.id) : []).toEqual([
+      "prelude",
+      "tool",
+    ]);
+    expect(units[1]).toMatchObject({
+      type: "message",
+      message: {
+        id: "final",
+        content: "Done. Open index.html to play.",
+      },
+    });
+  });
+
+  it("passes assistant turn latency to the preceding completed activity timeline", () => {
     const messages: UIMessage[] = [
       {
         id: "r1",
@@ -330,6 +652,30 @@ describe("ThreadMessages", () => {
     expect(screen.getAllByRole("button", { name: "Copy reply" })).toHaveLength(1);
   });
 
+  it("uses turn ids as activity grouping boundaries when available", () => {
+    const units = buildDisplayUnits([
+      { id: "u1", role: "user", content: "one", turnId: "turn-1", createdAt: 1 },
+      { id: "a1", role: "assistant", content: "answer one", turnId: "turn-1", createdAt: 2 },
+      {
+        id: "t2",
+        role: "tool",
+        kind: "trace",
+        content: "search()",
+        traces: ["search()"],
+        turnId: "turn-2",
+        createdAt: 3,
+      },
+      { id: "a2", role: "assistant", content: "answer two", turnId: "turn-2", createdAt: 4 },
+    ]);
+
+    expect(units.map((unit) => unit.type === "message" ? unit.message.id : "activity")).toEqual([
+      "u1",
+      "a1",
+      "activity",
+      "a2",
+    ]);
+  });
+
   it("computes final assistant copy flags with user-boundary semantics", () => {
     const units = buildDisplayUnits([
       { id: "u1", role: "user", content: "one", createdAt: 1 },
@@ -350,7 +696,7 @@ describe("ThreadMessages", () => {
     const flags = assistantCopyFlags(units);
     const assistantFlags = units
       .map((unit, index) =>
-        unit.type === "single" && unit.message.role === "assistant"
+        unit.type === "message" && unit.message.role === "assistant"
           ? [unit.message.id, flags[index]]
           : null,
       )
