@@ -278,6 +278,9 @@ class ProvidersConfig(Base):
     nvidia: ProviderConfig = Field(default_factory=ProviderConfig)  # NVIDIA NIM (nvapi- keys)
     opencode_zen: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenCode Zen (curated coding models)
     opencode_go: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenCode Go (low-cost coding models)
+    fireworks: ProviderConfig = Field(default_factory=ProviderConfig)  # Fireworks AI (fork built-in, OpenAI-compatible gateway)
+    parasail: ProviderConfig = Field(default_factory=ProviderConfig)  # Parasail (fork built-in)
+    together: ProviderConfig = Field(default_factory=ProviderConfig)  # Together AI (fork built-in)
 
     @model_validator(mode="after")
     def convert_extra_providers(self):
