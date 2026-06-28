@@ -31,6 +31,7 @@ import {
   History,
   ImageIcon,
   Loader2,
+  Mic,
   Plus,
   RotateCw,
   Shield,
@@ -47,6 +48,12 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   WorkspaceAccessMenu,
   WorkspaceProjectPicker,
 } from "@/components/thread/WorkspaceControls";
@@ -59,6 +66,7 @@ import {
 } from "@/hooks/useAttachedImages";
 import { useClipboardAndDrop } from "@/hooks/useClipboardAndDrop";
 import type { SendImage, SendOptions } from "@/hooks/useNanobotStream";
+import { useVoiceRecorder, type VoiceRecorderErrorKey } from "@/hooks/useVoiceRecorder";
 import type {
   CliAppInfo,
   GoalStateWsPayload,
@@ -79,11 +87,62 @@ import { cn } from "@/lib/utils";
 /** ``<input accept>``: aligned with the server's MIME whitelist. SVG is
  * deliberately excluded to avoid an embedded-script XSS surface. */
 const ACCEPT_ATTR = "image/png,image/jpeg,image/webp,image/gif";
+const VOICE_SHORTCUT_CODE = "KeyD";
+const VOICE_SHORTCUT_ARIA = "Control+Shift+D";
+type VoiceShortcutPlatform = "apple" | "chromeos" | "linux" | "other" | "windows";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isVoiceShortcutDown(event: KeyboardEvent): boolean {
+  return (
+    event.code === VOICE_SHORTCUT_CODE
+    && event.ctrlKey
+    && event.shiftKey
+    && !event.altKey
+    && !event.metaKey
+  );
+}
+
+function isVoiceShortcutRelease(event: KeyboardEvent): boolean {
+  return (
+    event.code === VOICE_SHORTCUT_CODE
+    || event.key === "Control"
+    || event.key === "Shift"
+  );
+}
+
+function getVoiceShortcutPlatform(): VoiceShortcutPlatform {
+  if (typeof navigator === "undefined") return "other";
+  const userAgentData = (navigator as Navigator & { userAgentData?: { platform?: string } })
+    .userAgentData;
+  const platform = [
+    userAgentData?.platform,
+    navigator.platform,
+    navigator.userAgent,
+  ].filter(Boolean).join(" ").toLowerCase();
+  const isIpadPretendingToBeMac =
+    navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  if (isIpadPretendingToBeMac || /mac|iphone|ipad|ipod/.test(platform)) return "apple";
+  if (/win/.test(platform)) return "windows";
+  if (/cros/.test(platform)) return "chromeos";
+  if (/linux|x11|android/.test(platform)) return "linux";
+  return "other";
+}
+
+function getVoiceShortcutLabel(): string {
+  switch (getVoiceShortcutPlatform()) {
+    case "apple":
+      return "⌃⇧D";
+    case "chromeos":
+    case "linux":
+    case "windows":
+    case "other":
+      return "Ctrl ⇧ D";
+  }
 }
 
 interface ThreadComposerProps {
@@ -101,6 +160,7 @@ interface ThreadComposerProps {
   cliApps?: CliAppInfo[];
   mcpPresets?: McpPresetInfo[];
   onStop?: () => void;
+  onTranscribeAudio?: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
   /** Unix seconds from server; turn elapsed timer above input while set. */
   runStartedAt?: number | null;
   /** Sustained objective for this chat (WebSocket ``goal_state``). */
@@ -112,6 +172,7 @@ interface ThreadComposerProps {
   workspaceError?: string | null;
   onWorkspaceScopeChange?: (scope: WorkspaceScopePayload) => void;
   pendingQueueKey?: string | null;
+  transcriptionProvider?: string | null;
 }
 
 const COMMAND_ICONS: Record<string, LucideIcon> = {
@@ -137,6 +198,45 @@ const SLASH_RECENTS_LIMIT = 5;
 const QUEUED_PROMPTS_STORAGE_PREFIX = "nanobot.webui.composerQueuedGuidance.v1:";
 const QUEUED_PROMPTS_LIMIT = 20;
 const QUEUED_PROMPT_MAX_CHARS = 4000;
+
+function VoiceRecordingMeter({
+  ariaLabel,
+  className,
+  elapsedLabel,
+  isHero,
+  levels,
+}: {
+  ariaLabel: string;
+  className?: string;
+  elapsedLabel: string;
+  isHero: boolean;
+  levels: number[];
+}) {
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-2 text-neutral-700 dark:text-white",
+        isHero ? "h-8" : "h-9",
+        className,
+      )}
+      aria-live="polite"
+      aria-label={ariaLabel}
+    >
+      <span className="flex h-5 min-w-0 flex-1 items-center justify-between overflow-hidden" aria-hidden>
+        {levels.map((height, index) => (
+          <span
+            key={index}
+            className="w-[2px] rounded-full bg-current opacity-85 transition-[height] duration-75 ease-linear motion-reduce:transition-none"
+            style={{ height }}
+          />
+        ))}
+      </span>
+      <span className="min-w-[2.1rem] text-right text-[12px] font-medium tabular-nums text-muted-foreground">
+        {elapsedLabel}
+      </span>
+    </div>
+  );
+}
 
 type SlashPalettePlacement = "above" | "below";
 
@@ -320,9 +420,20 @@ function suppressNativeDragPreview(dataTransfer: DataTransfer): void {
   window.setTimeout(() => ghost.remove(), 0);
 }
 
+function visualViewportBounds(): { top: number; bottom: number; height: number } {
+  const viewport = window.visualViewport;
+  if (!viewport) {
+    return { top: 0, bottom: window.innerHeight, height: window.innerHeight };
+  }
+  const top = Math.max(0, viewport.offsetTop);
+  const height = Math.max(0, viewport.height);
+  return { top, bottom: top + height, height };
+}
+
 function getVisibleBounds(el: HTMLElement): { top: number; bottom: number } {
-  let top = 0;
-  let bottom = window.innerHeight;
+  const viewport = visualViewportBounds();
+  let top = viewport.top;
+  let bottom = viewport.bottom;
   let parent = el.parentElement;
 
   while (parent) {
@@ -356,11 +467,12 @@ const GOAL_PANEL_MIN_HEIGHT_PX = 112;
 const GOAL_PANEL_MAX_VIEWPORT_RATIO = 0.62;
 
 function measureGoalPanelMaxCssHeight(stripTopY: number): number {
+  const viewport = visualViewportBounds();
   const spaceAboveStrip =
-    stripTopY - GOAL_PANEL_VIEWPORT_TOP_PAD - GOAL_PANEL_GAP_ABOVE_STRIP_PX;
+    stripTopY - viewport.top - GOAL_PANEL_VIEWPORT_TOP_PAD - GOAL_PANEL_GAP_ABOVE_STRIP_PX;
   return Math.min(
     Math.max(spaceAboveStrip, GOAL_PANEL_MIN_HEIGHT_PX),
-    Math.floor(window.innerHeight * GOAL_PANEL_MAX_VIEWPORT_RATIO),
+    Math.floor(viewport.height * GOAL_PANEL_MAX_VIEWPORT_RATIO),
   );
 }
 
@@ -494,10 +606,15 @@ function RunElapsedStrip({
     if (stripWrapperRef.current && ro) {
       ro.observe(stripWrapperRef.current);
     }
+    const viewport = window.visualViewport;
+    viewport?.addEventListener("resize", relayout);
+    viewport?.addEventListener("scroll", relayout);
     window.addEventListener("resize", relayout);
     window.addEventListener("scroll", relayout, true);
     return () => {
       ro?.disconnect();
+      viewport?.removeEventListener("resize", relayout);
+      viewport?.removeEventListener("scroll", relayout);
       window.removeEventListener("resize", relayout);
       window.removeEventListener("scroll", relayout, true);
     };
@@ -656,6 +773,7 @@ export function ThreadComposer({
   cliApps = [],
   mcpPresets = [],
   onStop,
+  onTranscribeAudio,
   runStartedAt = null,
   goalState,
   workspaceScope = null,
@@ -665,6 +783,7 @@ export function ThreadComposer({
   workspaceError = null,
   onWorkspaceScopeChange,
   pendingQueueKey = null,
+  transcriptionProvider = null,
 }: ThreadComposerProps) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
@@ -682,10 +801,13 @@ export function ThreadComposer({
   const chipRefs = useRef(new Map<string, HTMLButtonElement>());
   const queuedPromptCounterRef = useRef(0);
   const draggedQueuedPromptIdRef = useRef<string | null>(null);
+  const previousPendingQueueKeyRef = useRef(pendingQueueKey);
   const wasStreamingRef = useRef(isStreaming);
   const skipNextQueuedFlushRef = useRef(false);
   const skipQueuedPromptPersistRef = useRef(false);
+  const voiceShortcutDownRef = useRef(false);
   const isHero = variant === "hero";
+  const voiceShortcutLabel = useMemo(getVoiceShortcutLabel, []);
   const queuedPromptStorageKey = useMemo(
     () => queuedPromptsStorageKey(pendingQueueKey),
     [pendingQueueKey],
@@ -1008,9 +1130,14 @@ export function ThreadComposer({
     };
 
     updateLayout();
+    const viewport = window.visualViewport;
+    viewport?.addEventListener("resize", updateLayout);
+    viewport?.addEventListener("scroll", updateLayout);
     window.addEventListener("resize", updateLayout);
     document.addEventListener("scroll", updateLayout, true);
     return () => {
+      viewport?.removeEventListener("resize", updateLayout);
+      viewport?.removeEventListener("scroll", updateLayout);
       window.removeEventListener("resize", updateLayout);
       document.removeEventListener("scroll", updateLayout, true);
     };
@@ -1025,6 +1152,84 @@ export function ThreadComposer({
       el.focus();
     });
   }, []);
+
+  // Runs before paint so switching sessions never flashes stale draft text.
+  useLayoutEffect(() => {
+    if (previousPendingQueueKeyRef.current === pendingQueueKey) return;
+    previousPendingQueueKeyRef.current = pendingQueueKey;
+    setValue("");
+    setInlineError(null);
+    setSlashMenuDismissed(false);
+    setCliAppMenuDismissed(false);
+    setCursorPosition(0);
+    clear();
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
+    });
+  }, [clear, pendingQueueKey]);
+
+  const appendTranscription = useCallback((text: string) => {
+    const transcript = text.trim();
+    if (!transcript) return;
+    setValue((current) => {
+      if (!current.trim()) return transcript;
+      const separator = /[\s\n]$/.test(current) ? "" : " ";
+      return `${current}${separator}${transcript}`;
+    });
+    setSlashMenuDismissed(false);
+    setCliAppMenuDismissed(false);
+    setInlineError(null);
+    resizeTextarea();
+  }, [resizeTextarea]);
+
+  const clearInlineError = useCallback(() => setInlineError(null), []);
+  const setVoiceError = useCallback((key: VoiceRecorderErrorKey) => {
+    setInlineError(t(`thread.composer.voiceErrors.${key}`));
+  }, [t]);
+  const voiceRecorder = useVoiceRecorder({
+    disabled,
+    onClearError: clearInlineError,
+    onError: setVoiceError,
+    onTranscript: appendTranscription,
+    onTranscribeAudio,
+    wantsWav: transcriptionProvider === "xiaomi_mimo",
+  });
+
+  useEffect(() => {
+    if (!onTranscribeAudio) return;
+
+    function onKeyDown(event: KeyboardEvent): void {
+      if (!isVoiceShortcutDown(event) || event.repeat || voiceShortcutDownRef.current) return;
+      event.preventDefault();
+      voiceShortcutDownRef.current = true;
+      voiceRecorder.beginShortcutHold();
+    }
+
+    function onKeyUp(event: KeyboardEvent): void {
+      if (!voiceShortcutDownRef.current || !isVoiceShortcutRelease(event)) return;
+      event.preventDefault();
+      voiceShortcutDownRef.current = false;
+      voiceRecorder.endShortcutHold();
+    }
+
+    function onWindowBlur(): void {
+      if (!voiceShortcutDownRef.current) return;
+      voiceShortcutDownRef.current = false;
+      voiceRecorder.endShortcutHold();
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onWindowBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onWindowBlur);
+    };
+  }, [onTranscribeAudio, voiceRecorder.beginShortcutHold, voiceRecorder.endShortcutHold]);
 
   const chooseSlashCommand = useCallback(
     (command: SlashCommand) => {
@@ -1341,16 +1546,33 @@ export function ThreadComposer({
   );
 
   const attachButtonDisabled = disabled || full;
+  const showVoiceButton = Boolean(onTranscribeAudio);
+  const voiceRecordingStatusLabel = t("thread.composer.voice.recordingStatus", {
+    time: voiceRecorder.elapsedLabel,
+    defaultValue: `Recording ${voiceRecorder.elapsedLabel}`,
+  });
+  const voiceButtonLabel =
+    voiceRecorder.state === "recording"
+      ? t("thread.composer.voice.stop")
+      : voiceRecorder.state === "transcribing"
+        ? t("thread.composer.voice.transcribing")
+        : t("thread.composer.tools.voice");
+  const voiceButtonTooltip =
+    voiceRecorder.state === "recording"
+      ? t("thread.composer.voice.stop")
+      : voiceRecorder.state === "transcribing"
+        ? t("thread.composer.voice.transcribing")
+        : t("thread.composer.voice.hint");
   const showStopButton = isStreaming && !!onStop;
   const relaxedHeroInput = isHero && images.length === 0 && !isStreaming;
   const inputTextClasses = cn(
     "w-full resize-none bg-transparent",
     isHero
       ? cn(
-          "min-h-[78px] px-5 text-[15px] leading-6",
+          "min-h-[78px] px-4 text-[16px] leading-6 sm:px-5",
           relaxedHeroInput ? "pb-2 pt-[27px]" : "pb-1.5 pt-4",
         )
-      : "min-h-[50px] px-4 pb-1.5 pt-3 text-[13.5px] leading-5",
+      : "min-h-[50px] px-3.5 pb-1.5 pt-3 text-[16px] leading-5 sm:px-4",
   );
 
   return (
@@ -1502,11 +1724,13 @@ export function ThreadComposer({
         ) : null}
         <div
           className={cn(
-            "flex items-center justify-between",
-            isHero ? cn("gap-1.5 px-4", showProjectPicker ? "pb-1.5" : "pb-3.5") : "gap-2 px-3 pb-2",
+            "flex flex-wrap items-center justify-between gap-y-2",
+            isHero
+              ? cn("gap-x-1.5 px-3 sm:px-4", showProjectPicker ? "pb-1.5" : "pb-3.5")
+              : "gap-x-2 px-2.5 pb-2 sm:px-3",
           )}
         >
-          <div className={cn("flex min-w-0 flex-1 items-center", isHero ? "gap-1.5" : "gap-2")}>
+          <div className={cn("flex min-w-0 flex-1 basis-[8rem] items-center", isHero ? "gap-1.5" : "gap-2")}>
             <input
               ref={fileInputRef}
               type="file"
@@ -1531,7 +1755,15 @@ export function ThreadComposer({
             >
               <Plus className={cn(isHero ? "h-[18px] w-[18px]" : "h-4 w-4")} />
             </Button>
-            {workspaceScope ? (
+            {voiceRecorder.isRecording ? (
+              <VoiceRecordingMeter
+                ariaLabel={voiceRecordingStatusLabel}
+                className="mx-1 flex-1"
+                elapsedLabel={voiceRecorder.elapsedLabel}
+                isHero={isHero}
+                levels={voiceRecorder.levels}
+              />
+            ) : workspaceScope ? (
               <WorkspaceAccessMenu
                 scope={workspaceScope}
                 disabled={disabled || workspaceScopeDisabled}
@@ -1541,8 +1773,8 @@ export function ThreadComposer({
               />
             ) : null}
           </div>
-          <div className={cn("flex shrink-0 items-center", isHero ? "gap-1.5" : "gap-2")}>
-            {modelLabel ? (
+          <div className={cn("ml-auto flex min-w-0 shrink-0 items-center", isHero ? "gap-1.5" : "gap-2")}>
+            {modelLabel && !voiceRecorder.isRecording ? (
               <ComposerModelBadge
                 label={modelLabel}
                 provider={modelProvider}
@@ -1551,6 +1783,53 @@ export function ThreadComposer({
                 isHero={isHero}
                 onClick={modelNeedsSetup ? onModelBadgeClick : undefined}
               />
+            ) : null}
+            {showVoiceButton ? (
+              <TooltipProvider delayDuration={220} skipDelayDuration={80}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      disabled={voiceRecorder.buttonDisabled}
+                      aria-label={voiceButtonLabel}
+                      aria-keyshortcuts={VOICE_SHORTCUT_ARIA}
+                      title={voiceButtonTooltip}
+                      onPointerDown={voiceRecorder.beginPress}
+                      onPointerUp={voiceRecorder.endPress}
+                      onPointerCancel={voiceRecorder.endPress}
+                      onClick={voiceRecorder.handleClick}
+                      className={cn(
+                        "rounded-full border border-transparent text-muted-foreground hover:bg-muted/65 hover:text-foreground",
+                        isHero ? "h-8 w-8" : "h-9 w-9",
+                        voiceRecorder.isRecording &&
+                          "bg-red-500 text-white shadow-[0_8px_20px_rgba(239,68,68,0.22)] hover:bg-red-500 hover:text-white",
+                      )}
+                    >
+                      {voiceRecorder.state === "transcribing" ? (
+                        <Loader2 className={cn(isHero ? "h-4 w-4" : "h-4 w-4", "animate-spin")} />
+                      ) : voiceRecorder.isRecording ? (
+                        <Square className={cn(isHero ? "h-3.5 w-3.5" : "h-3.5 w-3.5")} fill="currentColor" />
+                      ) : (
+                        <Mic className={cn(isHero ? "h-4 w-4" : "h-4 w-4")} />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="top"
+                    align="center"
+                    className="flex items-center gap-2 rounded-full border border-border/70 bg-background px-3 py-1.5 text-[13px] font-medium text-foreground shadow-[0_8px_24px_rgba(15,23,42,0.13)] dark:border-white/10 dark:bg-neutral-900 dark:text-white"
+                  >
+                    <span>{voiceButtonTooltip}</span>
+                    {voiceRecorder.state === "idle" ? (
+                      <kbd className="rounded-full bg-muted px-2 py-0.5 font-sans text-[12px] font-semibold leading-none text-muted-foreground dark:bg-white/10 dark:text-white/80">
+                        {voiceShortcutLabel}
+                      </kbd>
+                    ) : null}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             ) : null}
             <Button
               type={showStopButton || modelNeedsSetup ? "button" : "submit"}
@@ -1820,7 +2099,9 @@ function ComposerModelBadge({
         "shadow-[0_2px_8px_rgba(15,23,42,0.045)]",
         interactive && "cursor-pointer hover:bg-accent/55 hover:text-foreground",
         needsSetup && "border-amber-500/35 bg-amber-50/70 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200",
-        isHero ? "h-8 max-w-[12.5rem] gap-1.5 px-2 text-[11.5px]" : "h-9 max-w-[12rem] gap-2 px-2.5 text-[12px]",
+        isHero
+          ? "h-8 max-w-[min(12.5rem,44vw)] gap-1.5 px-2 text-[11.5px]"
+          : "h-9 max-w-[min(12rem,44vw)] gap-2 px-2.5 text-[12px]",
       )}
     >
       <span
@@ -2001,7 +2282,7 @@ function CliAppMentionPalette({
                 onChoose(candidate);
               }}
               className={cn(
-                "flex h-10 w-full items-center gap-2.5 rounded-[13px] px-2.5 text-left transition-colors",
+                "flex min-h-10 w-full items-center gap-2.5 rounded-[13px] px-2.5 py-1.5 text-left transition-colors",
                 selected
                   ? "bg-foreground/[0.055] text-foreground"
                   : "text-foreground/90 hover:bg-foreground/[0.04]",
@@ -2009,7 +2290,7 @@ function CliAppMentionPalette({
             >
               <MentionCandidateLogo candidate={candidate} selected={selected} />
               <span className="flex min-w-0 flex-1 items-baseline gap-2">
-                <span className="shrink-0 text-[15px] font-medium tracking-normal text-foreground">
+                <span className="min-w-0 truncate text-[15px] font-medium tracking-normal text-foreground">
                   {displayName}
                 </span>
                 <span className="truncate text-[15px] font-normal tracking-normal text-muted-foreground/72">
@@ -2145,7 +2426,7 @@ function SlashCommandPalette({
               >
                 <Icon className="h-4 w-4" />
               </span>
-              <span className="flex min-w-0 flex-1 items-baseline gap-2">
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-2">
                 <span className="min-w-0 truncate text-[13.5px] font-semibold tracking-normal text-foreground">
                   {title}
                 </span>
@@ -2153,7 +2434,7 @@ function SlashCommandPalette({
                   {command.detail || description}
                 </span>
               </span>
-              <span className="ml-2 flex shrink-0 items-center gap-1.5">
+              <span className="ml-2 flex max-w-[42%] shrink-0 items-center gap-1.5 sm:max-w-none">
                 {command.badge || command.recent ? (
                   <span className="hidden rounded-full bg-foreground/[0.055] px-2 py-1 text-[11px] font-medium text-muted-foreground sm:inline-flex">
                     {command.badge ?? t("thread.composer.slash.badges.recent")}
@@ -2235,7 +2516,7 @@ function AttachmentChip({
         ) : null}
       </div>
       <div className="flex min-w-0 flex-col text-[11.5px] leading-4">
-        <span className="truncate max-w-[14rem] font-medium" title={image.file.name}>
+        <span className="max-w-[min(14rem,calc(100vw-8rem))] truncate font-medium" title={image.file.name}>
           {image.file.name}
         </span>
         <span className="truncate text-muted-foreground">

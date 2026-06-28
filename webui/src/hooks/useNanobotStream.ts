@@ -8,6 +8,7 @@ import {
   normalizeToolProgressEvents,
   toolTraceLinesFromEvents,
 } from "@/lib/tool-traces";
+import { hasPendingAgentActivity } from "@/lib/activity-timeline";
 import type { StreamError } from "@/lib/nanobot-client";
 import type {
   InboundEvent,
@@ -271,8 +272,14 @@ function absorbCompleteAssistantMessage(
 }
 
 function fileEditKey(edit: Pick<UIFileEdit, "call_id" | "tool" | "path">): string {
+  if (edit.call_id && edit.path) return `${edit.call_id}|${edit.tool}|${edit.path}`;
   if (edit.call_id) return `${edit.call_id}|${edit.tool}`;
   return `${edit.tool}|${edit.path}`;
+}
+
+function fileEditToolEventKey(edit: Pick<UIFileEdit, "call_id" | "tool" | "path">): string {
+  if (edit.call_id) return `${edit.call_id}|${edit.tool}`;
+  return fileEditKey(edit);
 }
 
 function toolEventFileEditKey(event: ToolProgressEvent): string | null {
@@ -291,7 +298,7 @@ function hasFileEditForToolEvent(messages: UIMessage[], event: ToolProgressEvent
   const key = toolEventFileEditKey(event);
   if (!key) return false;
   return messages.some((message) =>
-    message.fileEdits?.some((edit) => fileEditKey(edit) === key),
+    message.fileEdits?.some((edit) => fileEditToolEventKey(edit) === key),
   );
 }
 
@@ -304,7 +311,7 @@ function filterCoveredFileEditToolEvents(
 }
 
 function stripCoveredFileEditToolHints(message: UIMessage, edits: UIFileEdit[]): UIMessage {
-  const incomingKeys = new Set(edits.map(fileEditKey));
+  const incomingKeys = new Set(edits.map(fileEditToolEventKey));
   const events = message.toolEvents ?? [];
   if (!events.length || incomingKeys.size === 0) return message;
 
@@ -366,7 +373,14 @@ function mergeFileEdits(existing: UIFileEdit[] | undefined, incoming: UIFileEdit
     const edit = normalizeFileEdit(raw);
     if (!edit) continue;
     const key = fileEditKey(edit);
-    const existingIndex = indexByKey.get(key);
+    let existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined && edit.path) {
+      const eventKey = fileEditToolEventKey(edit);
+      const pendingIndex = next.findIndex((existing) =>
+        !existing.path && existing.pending && fileEditToolEventKey(existing) === eventKey,
+      );
+      if (pendingIndex >= 0) existingIndex = pendingIndex;
+    }
     if (existingIndex === undefined) {
       indexByKey.set(key, next.length);
       next.push(edit);
@@ -375,6 +389,7 @@ function mergeFileEdits(existing: UIFileEdit[] | undefined, incoming: UIFileEdit
     const merged = { ...next[existingIndex], ...edit };
     if (edit.path && !edit.pending) delete merged.pending;
     next[existingIndex] = merged;
+    indexByKey.set(key, existingIndex);
   }
   return next;
 }
@@ -385,17 +400,25 @@ function findFileEditTraceIndex(
   incoming: UIFileEdit[],
 ): number | null {
   const incomingKeys = new Set(incoming.map(fileEditKey));
+  const incomingToolEventKeys = new Set(incoming.map(fileEditToolEventKey));
   for (let i = prev.length - 1; i >= 0; i -= 1) {
     const candidate = prev[i];
     if (candidate.role === "user") break;
     if (candidate.kind !== "trace") continue;
     if (segmentId && candidate.activitySegmentId === segmentId) return i;
     for (const existing of candidate.fileEdits ?? []) {
-      if (incomingKeys.has(fileEditKey(existing))) return i;
+      if (
+        incomingKeys.has(fileEditKey(existing))
+        || (
+          !existing.path
+          && existing.pending
+          && incomingToolEventKeys.has(fileEditToolEventKey(existing))
+        )
+      ) return i;
     }
     for (const event of candidate.toolEvents ?? []) {
       const key = toolEventFileEditKey(event);
-      if (key && incomingKeys.has(key)) return i;
+      if (key && incomingToolEventKeys.has(key)) return i;
     }
   }
   return null;
@@ -438,6 +461,7 @@ export function useNanobotStream(
   /** Latest sustained goal for this ``chatId`` (``goal_state`` WS events). */
   goalState: GoalStateWsPayload | undefined;
   send: (content: string, images?: SendImage[], options?: SendOptions) => void;
+  transcribeAudio: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
   stop: () => void;
   setMessages: React.Dispatch<React.SetStateAction<UIMessage[]>>;
   /** Latest transport-level fault raised since the last ``dismissStreamError``.
@@ -449,12 +473,8 @@ export function useNanobotStream(
 } {
   const { client } = useClient();
   const [messages, setMessages] = useState<UIMessage[]>(initialMessages);
-  /** If the last loaded message is a trace row (e.g. "Using 2 tools"),
-   * the model was still processing when the page loaded — keep the
-   * loading spinner alive so the user sees the model is active. */
-  const initialStreaming = initialMessages.length > 0
-    ? initialMessages[initialMessages.length - 1].kind === "trace"
-    : false;
+  /** If history ends in unfinished agent activity, keep the loading spinner alive. */
+  const initialStreaming = hasPendingAgentActivity(initialMessages);
   const [isStreaming, setIsStreaming] = useState(initialStreaming || hasPendingToolCalls);
   /** Unix epoch seconds when the current user turn started; cleared on ``idle``. */
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
@@ -693,9 +713,7 @@ export function useNanobotStream(
   useEffect(() => {
     setMessages(initialMessages);
     setIsStreaming(
-      (initialMessages.length > 0
-        ? initialMessages[initialMessages.length - 1].kind === "trace"
-        : false) || hasPendingToolCalls,
+      hasPendingAgentActivity(initialMessages) || hasPendingToolCalls,
     );
     setStreamError(null);
     setRunStartedAt(chatId ? client.getRunStartedAt(chatId) : null);
@@ -1089,12 +1107,19 @@ export function useNanobotStream(
     client.sendMessage(chatId, "/stop");
   }, [chatId, clearActivitySegment, client, flushPendingStreamEvents]);
 
+  const transcribeAudio = useCallback(
+    (dataUrl: string, options?: { durationMs?: number }) =>
+      client.transcribeAudio(dataUrl, options),
+    [client],
+  );
+
   return {
     messages,
     isStreaming,
     runStartedAt,
     goalState,
     send,
+    transcribeAudio,
     stop,
     setMessages,
     streamError,

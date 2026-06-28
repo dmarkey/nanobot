@@ -34,6 +34,7 @@ from nanobot.utils.media_decode import (
     save_base64_data_url,
 )
 from nanobot.webui.cli_apps_api import normalize_cli_app_mentions
+from nanobot.webui.forking import handle_webui_fork_chat
 from nanobot.webui.gateway_services import GatewayServices
 from nanobot.webui.http_utils import (
     normalize_config_path as _normalize_config_path,
@@ -45,6 +46,7 @@ from nanobot.webui.http_utils import (
     query_first as _query_first,
 )
 from nanobot.webui.mcp_presets_api import normalize_mcp_preset_mentions
+from nanobot.webui.transcription_ws import webui_transcription_event
 from nanobot.webui.websocket_logging import websockets_server_logger
 
 
@@ -235,7 +237,7 @@ _VIDEO_MIME_ALLOWED: frozenset[str] = frozenset({
 
 _UPLOAD_MIME_ALLOWED: frozenset[str] = _IMAGE_MIME_ALLOWED | _VIDEO_MIME_ALLOWED
 
-_DATA_URL_MIME_RE = re.compile(r"^data:([^;]+);base64,", re.DOTALL)
+_DATA_URL_MIME_RE = re.compile(r"^data:([^;,]+)(?:;[^,]*)*;base64,", re.DOTALL)
 
 
 def _extract_data_url_mime(url: str) -> str | None:
@@ -418,7 +420,6 @@ class WebSocketChannel(BaseChannel):
             self._tokens.take_issued_token_if_valid(supplied)
         return None
 
-    # -- Server lifecycle and connection ingress ---------------------------
     # -- Server lifecycle and connection ingress ---------------------------
 
     async def start(self) -> None:
@@ -668,6 +669,9 @@ class WebSocketChannel(BaseChannel):
             )
             await self._hydrate_after_subscribe(new_id)
             return
+        if t == "fork_chat":
+            await handle_webui_fork_chat(self, connection, envelope)
+            return
         if t == "attach":
             cid = envelope.get("chat_id")
             if not _is_valid_chat_id(cid):
@@ -702,6 +706,10 @@ class WebSocketChannel(BaseChannel):
                 scope="metadata",
                 workspace_scope=scope.payload(),
             )
+            return
+        if t == "transcribe_audio":
+            event, payload = await webui_transcription_event(envelope)
+            await self._send_event(connection, event, **payload)
             return
         if t == "message":
             cid = envelope.get("chat_id")
@@ -819,6 +827,10 @@ class WebSocketChannel(BaseChannel):
         if self._server_task:
             try:
                 await self._server_task
+            except asyncio.CancelledError:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise
+                self.logger.debug("server task was already cancelled during shutdown")
             except Exception as e:
                 self.logger.warning("server task error during shutdown: {}", e)
             self._server_task = None
@@ -888,6 +900,7 @@ class WebSocketChannel(BaseChannel):
                 goal_state=gs_blob,
                 metadata=msg.metadata,
             )
+            await self.send_session_updated(msg.chat_id, scope="thread")
             return
         if msg.metadata.get("_session_updated"):
             if conns:
@@ -1055,7 +1068,7 @@ class WebSocketChannel(BaseChannel):
                 buffered.append(delta)
             full_text = "".join(buffered)
             rewritten = self._media.rewrite_local_markdown_images(full_text)
-            if rewritten != full_text:
+            if delta or rewritten != full_text:
                 body["text"] = rewritten
         else:
             body = {
@@ -1138,8 +1151,8 @@ class WebSocketChannel(BaseChannel):
             await self._safe_send_to(connection, raw, label=" goal_status ")
 
     async def send_session_updated(self, chat_id: str, *, scope: str | None = None) -> None:
-        """Notify clients that session metadata changed outside the main turn."""
-        conns = list(self._subs.get(chat_id, ()))
+        """Notify WebUI clients that a session row should refresh."""
+        conns = list(self._conn_chats)
         if not conns:
             return
         body: dict[str, Any] = {"event": "session_updated", "chat_id": chat_id}

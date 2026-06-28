@@ -188,6 +188,32 @@ describe("NanobotClient", () => {
     expect(client.getRunStartedAt("chat-strip")).toBeNull();
   });
 
+  it("clears stale run strip when reconnecting after a dropped socket", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: true,
+      maxBackoffMs: 10,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    const handler = vi.fn();
+    client.onRunStatus(handler);
+    client.connect();
+    lastSocket().fakeOpen();
+    lastSocket().fakeMessage({
+      event: "goal_status",
+      chat_id: "chat-strip",
+      status: "running",
+      started_at: 12_345,
+    });
+
+    lastSocket().close();
+
+    expect(client.getRunStartedAt("chat-strip")).toBeNull();
+    expect(handler).toHaveBeenLastCalledWith("chat-strip", null);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(FakeSocket.instances.length).toBeGreaterThan(1);
+  });
+
   it("clears run strip when a turn_end arrives without idle", () => {
     const client = new NanobotClient({
       url: "ws://test",
@@ -410,6 +436,61 @@ describe("NanobotClient", () => {
         webui: true,
       }),
     );
+  });
+
+  it("sends transcription requests and resolves transcription results outside chat dispatch", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    const handler = vi.fn();
+    client.onChat("chat-a", handler);
+    client.connect();
+    lastSocket().fakeOpen();
+
+    const promise = client.transcribeAudio("data:audio/webm;base64,AAAA", {
+      durationMs: 1234,
+      timeoutMs: 1_000,
+    });
+    const frame = JSON.parse(lastSocket().sent.at(-1) as string);
+    expect(frame).toMatchObject({
+      type: "transcribe_audio",
+      data_url: "data:audio/webm;base64,AAAA",
+      duration_ms: 1234,
+    });
+    expect(typeof frame.request_id).toBe("string");
+
+    lastSocket().fakeMessage({
+      event: "transcription_result",
+      request_id: frame.request_id,
+      text: "hello from voice",
+    });
+    await expect(promise).resolves.toBe("hello from voice");
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("rejects pending transcription requests on server errors and socket close", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    lastSocket().fakeOpen();
+
+    const errored = client.transcribeAudio("data:audio/webm;base64,AAAA", { timeoutMs: 1_000 });
+    const errorFrame = JSON.parse(lastSocket().sent.at(-1) as string);
+    lastSocket().fakeMessage({
+      event: "transcription_error",
+      request_id: errorFrame.request_id,
+      detail: "not_configured",
+    });
+    await expect(errored).rejects.toThrow("not_configured");
+
+    const dropped = client.transcribeAudio("data:audio/webm;base64,BBBB", { timeoutMs: 1_000 });
+    lastSocket().close();
+    await expect(dropped).rejects.toThrow("socket closed");
   });
 
   it("queues sends while connecting and flushes on open", () => {

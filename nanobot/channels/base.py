@@ -51,26 +51,31 @@ class BaseChannel(ABC):
         self._running = False
 
     async def transcribe_audio(self, file_path: str | Path, language: str | None = None, model: str | None = None) -> str:
-        """Transcribe an audio file via Whisper (OpenAI or Groq). Returns empty string on failure."""
-        if not self.transcription_api_key:
-            return ""
+        """Transcribe an audio file using the configured transcription provider.
+
+        Provider/model/key resolution is delegated to the centralized
+        ``nanobot.audio.transcription`` service, which reads the current config
+        at call time. ``language``/``model`` arguments, when given, override the
+        resolved config (used by channels such as ESPHome). Returns empty string
+        on failure.
+        """
         try:
-            if self.transcription_provider == "openai":
-                from nanobot.providers.transcription import OpenAITranscriptionProvider
-                provider = OpenAITranscriptionProvider(
-                    api_key=self.transcription_api_key,
-                    api_base=self.transcription_api_base or None,
-                    language=self.transcription_language or None,
+            import dataclasses
+
+            from nanobot.audio.transcription import (
+                resolve_transcription_config,
+                transcribe_audio_file,
+            )
+            from nanobot.config.loader import load_config
+
+            cfg = resolve_transcription_config(load_config())
+            if language is not None or model is not None:
+                cfg = dataclasses.replace(
+                    cfg,
+                    language=language if language is not None else cfg.language,
+                    model=model if model is not None else cfg.model,
                 )
-            else:
-                from nanobot.providers.transcription import GroqTranscriptionProvider
-                provider = GroqTranscriptionProvider(
-                    api_key=self.transcription_api_key,
-                    api_base=self.transcription_api_base or None,
-                    language=language or self.transcription_language or None,
-                    model=model,
-                )
-            return await provider.transcribe(file_path)
+            return await transcribe_audio_file(file_path, cfg)
         except Exception:
             self.logger.exception("Audio transcription failed")
             return ""

@@ -342,13 +342,8 @@ def test_get_history_preserves_reasoning_content():
     ]
 
 
-def test_get_history_annotates_user_turns_but_not_assistant_turns():
-    """Only user turns carry the timestamp prefix.
-
-    Annotating assistant turns trains the model (via in-context examples) to
-    start its own replies with ``[Message Time: ...]``. User-side stamps are
-    enough to pin adjacent assistant replies for relative-time reasoning.
-    """
+def test_get_history_does_not_inject_persisted_timestamps_into_replay_content():
+    """Persisted timestamps are session metadata, not prompt content."""
     session = Session(key="test:timestamps")
     session.messages.append({
         "role": "user",
@@ -361,12 +356,14 @@ def test_get_history_annotates_user_turns_but_not_assistant_turns():
         "timestamp": "2026-04-26T22:00:05",
     })
 
-    history = session.get_history(max_messages=500, include_timestamps=True)
+    history = session.get_history(max_messages=500)
 
+    assert session.messages[0]["timestamp"] == "2026-04-26T22:00:00"
+    assert session.messages[1]["timestamp"] == "2026-04-26T22:00:05"
     assert history == [
         {
             "role": "user",
-            "content": "[Message Time: 2026-04-26T22:00:00]\n10 点提醒是昨天发生的",
+            "content": "10 点提醒是昨天发生的",
         },
         {
             "role": "assistant",
@@ -375,8 +372,8 @@ def test_get_history_annotates_user_turns_but_not_assistant_turns():
     ]
 
 
-def test_get_history_does_not_annotate_proactive_assistant_deliveries_with_timestamps():
-    """Assistant-side timestamp examples can leak back into future replies."""
+def test_get_history_keeps_proactive_delivery_timestamps_out_of_replay_content():
+    """Timestamp metadata remains persisted without becoming prompt text."""
     session = Session(key="test:proactive-timestamps")
     session.messages.append({
         "role": "assistant",
@@ -390,8 +387,10 @@ def test_get_history_does_not_annotate_proactive_assistant_deliveries_with_times
         "timestamp": "2026-04-26T18:00:00",
     })
 
-    history = session.get_history(max_messages=500, include_timestamps=True)
+    history = session.get_history(max_messages=500)
 
+    assert session.messages[0]["timestamp"] == "2026-04-26T15:00:00"
+    assert session.messages[1]["timestamp"] == "2026-04-26T18:00:00"
     assert history == [
         {
             "role": "assistant",
@@ -399,18 +398,18 @@ def test_get_history_does_not_annotate_proactive_assistant_deliveries_with_times
         },
         {
             "role": "user",
-            "content": "[Message Time: 2026-04-26T18:00:00]\n好",
+            "content": "好",
         },
     ]
 
 
-def test_get_history_does_not_annotate_tool_results_with_timestamps():
+def test_get_history_does_not_inject_tool_result_timestamps():
     session = Session(key="test:tool-timestamps")
     session.messages.append({"role": "user", "content": "run tool"})
     session.messages.extend(_tool_turn("ts", 0))
     session.messages[-1]["timestamp"] = "2026-04-26T22:00:10"
 
-    history = session.get_history(max_messages=500, include_timestamps=True)
+    history = session.get_history(max_messages=500)
 
     tool_result = history[-1]
     assert tool_result["role"] == "tool"
@@ -502,6 +501,87 @@ def test_get_history_synthesizes_cli_app_attachment_breadcrumb():
     }]
 
 
+def test_fork_session_before_user_index_copies_only_prefix(tmp_path):
+    manager = SessionManager(tmp_path)
+    source = manager.get_or_create("websocket:source")
+    source.metadata["webui"] = True
+    source.metadata["title"] = "Old title"
+    source.metadata["goal_state"] = {"status": "active", "objective": "do not inherit"}
+    source.add_message("user", "round1")
+    source.add_message("assistant", "answer1")
+    source.add_message("user", "round2 fork me")
+    source.add_message("assistant", "answer2")
+    source.add_message("user", "round3 must not appear")
+    manager.save(source)
+
+    forked = manager.fork_session_before_user_index(
+        "websocket:source",
+        "websocket:fork",
+        1,
+    )
+
+    assert forked is not None
+    assert [m["content"] for m in forked.messages] == ["round1", "answer1"]
+    assert forked.metadata["webui"] is True
+    assert "title" not in forked.metadata
+    assert "goal_state" not in forked.metadata
+    saved = manager.read_session_file("websocket:fork")
+    assert [m["content"] for m in saved["messages"]] == ["round1", "answer1"]
+
+
+def test_fork_session_rejects_negative_missing_and_out_of_range(tmp_path):
+    manager = SessionManager(tmp_path)
+    source = manager.get_or_create("websocket:source")
+    source.add_message("user", "round1")
+    manager.save(source)
+
+    assert manager.fork_session_before_user_index("websocket:source", "websocket:x", -1) is None
+    assert manager.fork_session_before_user_index("websocket:missing", "websocket:x", 0) is None
+    assert manager.fork_session_before_user_index("websocket:source", "websocket:x", 2) is None
+
+
+def test_fork_session_allows_index_equal_to_user_count(tmp_path):
+    manager = SessionManager(tmp_path)
+    source = manager.get_or_create("websocket:source")
+    source.add_message("user", "round1")
+    source.add_message("assistant", "answer1")
+    manager.save(source)
+
+    forked = manager.fork_session_before_user_index(
+        "websocket:source",
+        "websocket:fork",
+        1,
+    )
+
+    assert forked is not None
+    assert [m["content"] for m in forked.messages] == ["round1", "answer1"]
+
+
+def test_fork_session_drops_summary_when_fork_point_is_inside_consolidated_prefix(tmp_path):
+    manager = SessionManager(tmp_path)
+    source = manager.get_or_create("websocket:source")
+    source.messages = [
+        {"role": "user", "content": "round1"},
+        {"role": "assistant", "content": "answer1"},
+        {"role": "user", "content": "round2 fork me"},
+        {"role": "assistant", "content": "answer2"},
+    ]
+    source.last_consolidated = 4
+    source.metadata["_last_summary"] = {"text": "round2 fork me and answer2"}
+    manager.save(source)
+
+    forked = manager.fork_session_before_user_index(
+        "websocket:source",
+        "websocket:fork",
+        1,
+    )
+
+    assert forked is not None
+    assert [m["content"] for m in forked.messages] == ["round1", "answer1"]
+    assert forked.last_consolidated == 0
+    assert "_last_summary" not in forked.metadata
+
+
 def test_get_history_ignores_media_kwarg_on_non_user_rows():
     """``media`` only ever appears on user entries in practice, but the
     synthesizer must be defensive: assistants / tools with list content
@@ -550,7 +630,7 @@ def test_get_history_sanitizes_existing_assistant_replay_artifacts():
         }
     )
 
-    history = session.get_history(max_messages=500, include_timestamps=True)
+    history = session.get_history(max_messages=500)
 
     assert history == [{"role": "assistant", "content": "来了 🎨"}]
 
@@ -616,6 +696,60 @@ def test_retain_recent_legal_suffix_hard_cap_with_long_non_user_chain():
     session.retain_recent_legal_suffix(6)
 
     assert len(session.messages) <= 6
+
+
+def test_retain_recent_legal_suffix_can_extend_to_user_for_long_recent_turn():
+    session = Session(key="test:extend-to-user")
+    session.messages.append({"role": "user", "content": "old"})
+    session.messages.append({"role": "assistant", "content": "old answer"})
+    session.messages.append({"role": "user", "content": "record this"})
+    for i in range(4):
+        session.messages.extend(_tool_turn("recent", i))
+    session.messages.append({"role": "assistant", "content": "done"})
+
+    session.retain_recent_legal_suffix(8, extend_to_user=True)
+
+    assert len(session.messages) > 8
+    assert session.messages[0]["content"] == "record this"
+    assert session.messages[-1]["content"] == "done"
+    history = session.get_history(max_messages=500)
+    _assert_no_orphans(history)
+
+
+def test_get_history_can_extend_to_user_for_long_recent_turn():
+    session = Session(key="test:history-extend-to-user")
+    session.messages.append({"role": "user", "content": "old"})
+    session.messages.append({"role": "assistant", "content": "old answer"})
+    session.messages.append({"role": "user", "content": "record this"})
+    for i in range(4):
+        session.messages.extend(_tool_turn("recent", i))
+    session.messages.append({"role": "assistant", "content": "done"})
+
+    hard_capped = session.get_history(max_messages=8)
+    extended = session.get_history(max_messages=8, extend_to_user=True)
+
+    assert len(hard_capped) <= 8
+    assert len(extended) > 8
+    assert extended[0]["content"] == "record this"
+    assert extended[-1]["content"] == "done"
+    _assert_no_orphans(extended)
+
+
+def test_get_history_extend_to_user_keeps_newer_user_inside_window():
+    session = Session(key="test:history-extend-newer-user")
+    session.messages.append({"role": "user", "content": "old"})
+    session.messages.append({"role": "assistant", "content": "old answer"})
+    session.messages.append({"role": "user", "content": "long older turn"})
+    for i in range(8):
+        session.messages.extend(_tool_turn("older", i))
+    session.messages.append({"role": "assistant", "content": "older final"})
+    session.messages.append({"role": "user", "content": "new question"})
+    session.messages.append({"role": "assistant", "content": "new answer"})
+
+    history = session.get_history(max_messages=6, extend_to_user=True)
+
+    assert [m["content"] for m in history] == ["new question", "new answer"]
+    _assert_no_orphans(history)
 
 
 # --- enforce_file_cap archive correctness (issue #4128) ---

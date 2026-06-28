@@ -55,6 +55,7 @@
       "ariaLabel": "언어 변경"
     },
     "apps": "앱",
+    "automations": "자동화",
     "skills": {
       "title": "스킬"
     }
@@ -73,18 +74,21 @@
       "models": "모델",
       "providers": "제공자",
       "image": "이미지",
+      "voice": "음성",
       "browser": "웹",
       "runtime": "시스템",
       "advanced": "보안",
       "cliApps": "CLI 앱",
       "mcp": "MCP",
       "apps": "앱",
+      "automations": "자동화",
       "skills": "스킬"
     },
     "sections": {
       "interface": "인터페이스",
       "ai": "AI",
       "system": "시스템",
+      "about": "정보",
       "status": "상태",
       "localPreferences": "로컬 환경설정",
       "presets": "프리셋",
@@ -99,7 +103,8 @@
       "mcp": "MCP 서비스",
       "apps": "앱",
       "nativeHost": "네이티브 호스트",
-      "hostSafety": "앱 보안"
+      "hostSafety": "앱 보안",
+      "voiceInput": "음성 입력"
     },
     "rows": {
       "theme": "테마",
@@ -142,7 +147,13 @@
       "engine": "엔진",
       "logs": "로그",
       "diagnostics": "진단",
-      "contextWindow": "컨텍스트 창"
+      "contextWindow": "컨텍스트 창",
+      "transcription": "전사",
+      "transcriptionProvider": "제공자",
+      "transcriptionProviderStatus": "제공자 상태",
+      "transcriptionModel": "모델",
+      "transcriptionLanguage": "언어",
+      "voiceLimits": "제한"
     },
     "help": {
       "theme": "밝은 모드와 어두운 모드를 전환합니다.",
@@ -181,7 +192,12 @@
       "diagnostics": "지원용 작은 런타임 보고서를 내보냅니다.",
       "localServiceAccessNative": "Full Access shell 명령이 이 Mac의 서비스에 접근할 수 있게 합니다.",
       "webuiDefaultAccessNative": "프로젝트별 권한이 없는 네이티브 채팅에 사용됩니다.",
-      "contextWindow": "이 모델 구성의 기본 컨텍스트 예산을 선택합니다."
+      "contextWindow": "이 모델 구성의 기본 컨텍스트 예산을 선택합니다.",
+      "transcription": "마이크 입력을 보내기 전에 텍스트로 변환합니다. 채널 음성 메시지도 같은 설정을 사용합니다.",
+      "transcriptionProvider": "Providers에 저장된 해당 제공자의 인증 정보를 사용합니다.",
+      "transcriptionProviderStatus": "API 키는 transcription 설정이 아니라 providers 아래에 유지됩니다.",
+      "transcriptionModel": "제공자가 사용자 지정 모델 ID를 요구하지 않으면 해석된 기본값을 사용하세요.",
+      "transcriptionLanguage": "en, zh, ja, ko 같은 선택적 ISO-639 힌트입니다."
     },
     "values": {
       "light": "라이트",
@@ -283,6 +299,7 @@
       "totalProviders": "{{count}}개 사용 가능",
       "webSearch": "웹 검색",
       "imageGeneration": "이미지 생성",
+      "voiceInput": "음성 입력",
       "workspace": "작업공간"
     },
     "usage": {
@@ -377,6 +394,13 @@
       "unavailable": "사용 불가",
       "noDescription": "설명이 없습니다."
     },
+    "about": {
+      "version": "버전",
+      "checking": "확인 중...",
+      "checkForUpdates": "업데이트 확인",
+      "upToDate": "최신 버전입니다",
+      "updateAvailable": "업데이트 사용 가능 v{{version}}"
+    },
     "mcp": {
       "allCategories": "모든 카테고리",
       "summary": "프리셋 {{total}}개 중 {{installed}}개 활성화됨",
@@ -447,6 +471,127 @@
       "loading": "앱을 불러오는 중...",
       "empty": "일치하는 앱이 없습니다."
     },
+    "automations": {
+      "filters": {
+        "all": "전체",
+        "active": "활성",
+        "paused": "일시 중지",
+        "failed": "확인 필요",
+        "system": "시스템"
+      },
+      "sort": {
+        "next": "다음 실행",
+        "last": "마지막 실행",
+        "updated": "업데이트",
+        "name": "이름"
+      },
+      "search": "작업, 메시지, 연결된 채팅 또는 일정 검색",
+      "queue": "대기열",
+      "loading": "자동화를 불러오는 중...",
+      "noMatches": "이 보기와 일치하는 자동화가 없습니다.",
+      "empty": "아직 자동화가 없습니다.",
+      "emptyHint": "실행될 위치에서 만들면 nanobot이 올바른 컨텍스트를 유지합니다.",
+      "oneShot": "일회성",
+      "systemTask": "시스템 관리 자동화",
+      "labels": {
+        "schedule": "일정",
+        "next": "다음",
+        "origin": "연결된 채팅",
+        "created": "생성",
+        "updated": "업데이트"
+      },
+      "runNow": "지금 실행",
+      "pause": "일시 중지",
+      "resume": "재개",
+      "edit": "편집",
+      "delete": "삭제",
+      "protected": "보호됨",
+      "editTitle": "자동화 편집",
+      "save": "저장",
+      "deleteTitle": "자동화 삭제",
+      "deleteDescription": "{{name}}을 cron 저장소에서 삭제합니다. 이전 채팅 메시지는 세션에 남습니다.",
+      "cancel": "취소",
+      "status": {
+        "system": "시스템",
+        "running": "실행 중",
+        "paused": "일시 중지",
+        "failed": "실패",
+        "completed": "완료",
+        "noSchedule": "일정 없음",
+        "active": "활성"
+      },
+      "origin": {
+        "system": "시스템",
+        "unknown": "연결된 채팅 없음"
+      },
+      "channels": {
+        "api": "API",
+        "cli": "CLI",
+        "dingtalk": "DingTalk",
+        "discord": "Discord",
+        "email": "Email",
+        "feishu": "Feishu",
+        "matrix": "Matrix",
+        "msteams": "Microsoft Teams",
+        "qq": "QQ",
+        "slack": "Slack",
+        "telegram": "Telegram",
+        "wechat": "WeChat",
+        "wecom": "WeCom",
+        "weixin": "WeChat",
+        "whatsapp": "WhatsApp"
+      },
+      "schedule": {
+        "at": "{{time}}",
+        "every": "{{duration}}마다",
+        "cron": "Cron {{expr}}",
+        "cronWithTz": "Cron {{expr}} · {{tz}}",
+        "withTz": "{{summary}} · {{tz}}",
+        "dailyAt": "매일 {{time}}",
+        "weekdaysAt": "평일 {{time}}",
+        "hourlyAt": "매시간 :{{minute}}",
+        "hourlyWindow": "{{start}}-{{end}} 사이 매시간 :{{minute}}",
+        "custom": "사용자 지정 일정"
+      },
+      "next": {
+        "paused": "일시 중지",
+        "pending": "실행 중",
+        "none": "다음 실행 없음"
+      },
+      "message": {
+        "showMore": "전체 메시지 보기",
+        "showLess": "접기"
+      },
+      "fields": {
+        "name": "이름",
+        "message": "메시지",
+        "scheduleType": "일정 유형",
+        "every": "간격",
+        "unit": "단위",
+        "cronExpression": "Cron 식",
+        "timezone": "시간대",
+        "runAt": "실행 시간"
+      },
+      "scheduleTypes": {
+        "every": "간격",
+        "cron": "Cron",
+        "at": "일회성"
+      },
+      "everyUnits": {
+        "second": "초",
+        "minute": "분",
+        "hour": "시간",
+        "day": "일"
+      },
+      "validation": {
+        "nameRequired": "이름은 필수입니다.",
+        "messageRequired": "메시지는 필수입니다.",
+        "intervalRequired": "간격은 양수여야 합니다.",
+        "cronRequired": "Cron 식은 필수입니다.",
+        "timeRequired": "실행 시간은 필수입니다.",
+        "futureRequired": "실행 시간은 현재보다 이후여야 합니다."
+      }
+    },
     "oauth": {
       "authentication": "OAuth 인증",
       "signIn": "로그인",
@@ -486,10 +631,16 @@
       "rawInstructions": "원본 SKILL.md",
       "rawInstructionsEmpty": "원본 지침이 없습니다.",
       "detailDescription": "{{name}} 세부 정보."
+    },
+    "voice": {
+      "selectProvider": "제공자 선택",
+      "configureProvider": "제공자 설정",
+      "languageAuto": "자동"
     }
   },
   "chat": {
     "fallbackTitle": "채팅 {{id}}",
+    "forkTitle": "분기: {{title}}",
     "loading": "불러오는 중…",
     "noSessions": "아직 세션이 없습니다.",
     "showMore": "{{count}}개 더 보기",
@@ -499,7 +650,8 @@
     "newInProject": "{{project}}에서 새 채팅 시작",
     "activity": {
       "running": "Agent running",
-      "complete": "Agent finished"
+      "complete": "Agent finished",
+      "updated": "New activity"
     },
     "pin": "Pin",
     "unpin": "Unpin",
@@ -531,7 +683,22 @@
     "title": "이 채팅을 삭제할까요?",
     "description": "이 작업은 되돌릴 수 없습니다.",
     "cancel": "취소",
-    "confirm": "삭제"
+    "confirm": "삭제",
+    "automationsDescription": "이 채팅에는 예약된 자동화가 있습니다. 채팅을 삭제하면 자동화도 함께 삭제됩니다.",
+    "moreAutomations": "+ {{count}}개 더",
+    "confirmWithAutomations": "삭제",
+    "schedule": {
+      "at": "{{time}}",
+      "every": "{{duration}}마다",
+      "cron": "Cron {{expr}}",
+      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "unknown": "사용자 지정 일정"
+    },
+    "next": {
+      "label": "다음: {{time}}",
+      "disabled": "일시 중지됨",
+      "none": "다음 실행 없음"
+    }
   },
   "connection": {
     "idle": "대기 중",
@@ -628,6 +795,7 @@
       },
       "next": {
         "label": "다음 {{time}}",
+        "pending": "곧 실행됨",
         "disabled": "일시 중지됨",
         "none": "다음 실행 없음"
       }
@@ -677,6 +845,21 @@
         "reason": "추론",
         "deepResearch": "심층 조사",
         "voice": "음성 입력"
+      },
+      "voice": {
+        "hint": "클릭해 받아쓰거나 길게 누르기",
+        "stop": "녹음 중지",
+        "transcribing": "변환 중...",
+        "recordingStatus": "녹음 중 {{time}}"
+      },
+      "voiceErrors": {
+        "unsupported": "이 브라우저는 음성 입력을 지원하지 않습니다.",
+        "permission": "마이크 권한이 필요합니다.",
+        "notConfigured": "먼저 음성 변환 제공업체를 설정하세요.",
+        "tooLong": "녹음 시간이 너무 깁니다.",
+        "tooShort": "음성을 녹음하려면 조금 더 길게 눌러 주세요.",
+        "noInput": "마이크 입력이 감지되지 않았습니다.",
+        "failed": "오디오를 변환하지 못했습니다."
       },
       "slash": {
         "ariaLabel": "슬래시 명령",
@@ -776,6 +959,7 @@
     },
     "scrollToBottom": "맨 아래로 스크롤",
     "loadEarlier": "이전 메시지 불러오기",
+    "forkedFromHistory": "기록에서 분기됨",
     "promptNavigator": {
       "open": "프롬프트 탐색기 열기",
       "title": "프롬프트",
@@ -801,12 +985,16 @@
     "agentActivityLiveSummary": "진행 중… · {{reasoning}}단계 · 도구 호출 {{tools}}회",
     "agentActivityLiveToolsOnly": "진행 중… · 도구 호출 {{tools}}회",
     "imageAttachment": "이미지 첨부",
-    "copyReply": "답변 복사",
-    "copiedReply": "답변이 복사됨",
+    "forkFromHere": "분기",
+    "copyReply": "복사",
+    "copiedReply": "복사됨",
     "turnLatencyTitle": "응답 시간(엔드투엔드)",
     "activityThinkingFor": "{{duration}} 동안 생각 중",
     "activityThought": "생각함",
     "activityThoughtFor": "{{duration}} 동안 생각함",
+    "activityWorkingFor": "{{duration}} 동안 작업 중",
+    "activityWorked": "작업함",
+    "activityWorkedFor": "{{duration}} 동안 작업함",
     "cliActivityRunningOne": "@{{name}} 사용 중",
     "cliActivityRanOne": "@{{name}} 사용함",
     "cliActivityFailedOne": "@{{name}} 실패",

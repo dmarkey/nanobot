@@ -58,6 +58,7 @@ class ChannelManager:
         session_manager: "SessionManager | None" = None,
         cron_service: Any | None = None,
         webui_runtime_model_name: Callable[[], str | None] | None = None,
+        webui_cron_pending_job_ids: Callable[[str], set[str]] | None = None,
         webui_static_dist: bool = True,
         webui_runtime_surface: str = "browser",
         webui_runtime_capabilities: dict[str, Any] | None = None,
@@ -67,6 +68,7 @@ class ChannelManager:
         self._session_manager = session_manager
         self._cron_service = cron_service
         self._webui_runtime_model_name = webui_runtime_model_name
+        self._webui_cron_pending_job_ids = webui_cron_pending_job_ids
         self._webui_static_dist = webui_static_dist
         self._webui_runtime_surface = webui_runtime_surface
         self._webui_runtime_capabilities = dict(webui_runtime_capabilities or {})
@@ -132,6 +134,7 @@ class ChannelManager:
                         runtime_surface=self._webui_runtime_surface,
                         runtime_capabilities_overrides=self._webui_runtime_capabilities,
                         cron_service=self._cron_service,
+                        cron_pending_job_ids=self._webui_cron_pending_job_ids,
                         logger=logger,
                     )
                     kwargs["gateway"] = gateway
@@ -204,7 +207,7 @@ class ChannelManager:
         """Return whether progress (or tool-hints) may be sent to *channel_name*."""
         ch = self.channels.get(channel_name)
         if ch is None:
-            logger.warning("Progress check for unknown channel: {}", channel_name)
+            logger.debug("Progress check for unknown channel: {}", channel_name)
             return False
         return ch.send_tool_hints if tool_hint else ch.send_progress
 
@@ -285,6 +288,10 @@ class ChannelManager:
             try:
                 await channel.stop()
                 logger.info("Stopped {} channel", name)
+            except asyncio.CancelledError:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise
+                logger.debug("Channel {} stop task was already cancelled", name)
             except Exception:
                 logger.exception("Error stopping {}", name)
 
@@ -428,7 +435,7 @@ class ChannelManager:
     def _coalesce_stream_deltas(
         self, first_msg: OutboundMessage
     ) -> tuple[OutboundMessage, list[OutboundMessage]]:
-        """Merge consecutive _stream_delta messages for the same (channel, chat_id).
+        """Merge consecutive _stream_delta messages for the same (channel, chat_id, _stream_id).
 
         This reduces the number of API calls when the queue has accumulated multiple
         deltas, which happens when LLM generates faster than the channel can process.
@@ -436,7 +443,8 @@ class ChannelManager:
         Returns:
             tuple of (merged_message, list_of_non_matching_messages)
         """
-        target_key = (first_msg.channel, first_msg.chat_id)
+        first_metadata = first_msg.metadata or {}
+        target_key = (first_msg.channel, first_msg.chat_id, first_metadata.get("_stream_id"))
         combined_content = first_msg.content
         final_metadata = dict(first_msg.metadata or {})
         non_matching: list[OutboundMessage] = []
@@ -450,9 +458,14 @@ class ChannelManager:
                 break
 
             # Check if this message belongs to the same stream
-            same_target = (next_msg.channel, next_msg.chat_id) == target_key
-            is_delta = next_msg.metadata and next_msg.metadata.get("_stream_delta")
-            is_end = next_msg.metadata and next_msg.metadata.get("_stream_end")
+            next_metadata = next_msg.metadata or {}
+            same_target = (
+                next_msg.channel,
+                next_msg.chat_id,
+                next_metadata.get("_stream_id"),
+            ) == target_key
+            is_delta = next_metadata.get("_stream_delta")
+            is_end = next_metadata.get("_stream_end")
 
             if same_target and is_delta and not final_metadata.get("_stream_end"):
                 # Accumulate content

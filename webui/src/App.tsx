@@ -29,12 +29,14 @@ import {
   loadSavedSecret,
   saveSecret,
 } from "@/lib/bootstrap";
+import { displayTitle } from "@/lib/chat-groups";
 import { deriveTitle } from "@/lib/format";
 import { NanobotClient } from "@/lib/nanobot-client";
 import { ClientProvider, useClient } from "@/providers/ClientProvider";
 import type {
   ChatSummary,
   RuntimeSurface,
+  SessionAutomationJob,
   SettingsPayload,
   WorkspaceScopePayload,
   WorkspacesPayload,
@@ -63,13 +65,15 @@ type BootState =
     };
 
 const SIDEBAR_STORAGE_KEY = "nanobot-webui.sidebar";
-const COMPLETED_RUNS_STORAGE_KEY = "nanobot-webui.sidebar.completed-runs.v1";
+const SESSION_UPDATES_STORAGE_KEY = "nanobot-webui.sidebar.session-updates.v1";
+const LEGACY_COMPLETED_RUNS_STORAGE_KEY = "nanobot-webui.sidebar.completed-runs.v1";
 const RESTART_STARTED_KEY = "nanobot-webui.restartStartedAt";
 const SIDEBAR_WIDTH = 272;
 const SIDEBAR_RAIL_WIDTH = 56;
+const MOBILE_SIDEBAR_WIDTH = `min(${SIDEBAR_WIDTH}px, calc(100vw - 0.75rem))`;
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
 const TOKEN_REFRESH_MIN_DELAY_MS = 5_000;
-type ShellView = "chat" | "settings" | "apps" | "skills";
+type ShellView = "chat" | "settings" | "apps" | "automations" | "skills";
 type ShellRoute = {
   view: ShellView;
   activeKey: string | null;
@@ -81,8 +85,10 @@ const SETTINGS_SECTION_KEYS: SettingsSectionKey[] = [
   "appearance",
   "models",
   "image",
+  "voice",
   "browser",
   "apps",
+  "automations",
   "skills",
   "runtime",
   "advanced",
@@ -97,7 +103,7 @@ function defaultShellRoute(): ShellRoute {
 }
 
 function shellViewForSettingsSection(section: SettingsSectionKey): ShellView {
-  if (section === "apps" || section === "skills") return section;
+  if (section === "apps" || section === "automations" || section === "skills") return section;
   return "settings";
 }
 
@@ -125,6 +131,9 @@ function readShellRoute(): ShellRoute {
   }
   if (path === "/apps") {
     return { view: "apps", activeKey, settingsSection: "apps" };
+  }
+  if (path === "/automations") {
+    return { view: "automations", activeKey, settingsSection: "automations" };
   }
   if (path === "/skills") {
     return { view: "skills", activeKey, settingsSection: "skills" };
@@ -251,10 +260,12 @@ function readSidebarOpen(): boolean {
   }
 }
 
-function readCompletedRunChatIds(): Set<string> {
+function readSessionUpdateChatIds(): Set<string> {
   if (typeof window === "undefined") return new Set();
   try {
-    const raw = window.localStorage.getItem(COMPLETED_RUNS_STORAGE_KEY);
+    const raw =
+      window.localStorage.getItem(SESSION_UPDATES_STORAGE_KEY)
+      ?? window.localStorage.getItem(LEGACY_COMPLETED_RUNS_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return new Set();
     return new Set(parsed.filter((item): item is string => typeof item === "string"));
@@ -263,10 +274,10 @@ function readCompletedRunChatIds(): Set<string> {
   }
 }
 
-function writeCompletedRunChatIds(chatIds: Set<string>): void {
+function writeSessionUpdateChatIds(chatIds: Set<string>): void {
   try {
     window.localStorage.setItem(
-      COMPLETED_RUNS_STORAGE_KEY,
+      SESSION_UPDATES_STORAGE_KEY,
       JSON.stringify(Array.from(chatIds)),
     );
   } catch {
@@ -400,7 +411,7 @@ export default function App() {
           if (cancelled) return;
           const msg = (e as Error).message;
           if (msg.includes("HTTP 401") || msg.includes("HTTP 403")) {
-            setState({ status: "auth", failed: true });
+            setState({ status: "auth", failed: !!secret });
           } else {
             setState({ status: "error", message: msg });
           }
@@ -422,7 +433,7 @@ export default function App() {
       } catch (e) {
         const msg = (e as Error).message;
         if (msg.includes("HTTP 401") || msg.includes("HTTP 403")) {
-          setState({ status: "auth", failed: true });
+          setState({ status: "auth", failed: !!bootstrapSecretRef.current });
         }
       }
     }, tokenRefreshDelayMs(state.tokenExpiresAt));
@@ -525,7 +536,15 @@ function Shell({
   const { t, i18n } = useTranslation();
   const { client, token } = useClient();
   const { theme, toggle } = useTheme();
-  const { sessions, loading, refresh, createChat, deleteChat } = useSessions();
+  const {
+    sessions,
+    loading,
+    refresh,
+    createChat,
+    forkChat,
+    deleteChat,
+    getSessionAutomations,
+  } = useSessions();
   const { state: sidebarState, update: updateSidebarState } =
     useSidebarState(sessions, !loading);
   const initialRouteRef = useRef<ShellRoute | null>(null);
@@ -544,6 +563,7 @@ function Shell({
   const [pendingDelete, setPendingDelete] = useState<{
     key: string;
     label: string;
+    automations?: SessionAutomationJob[];
   } | null>(null);
   const [pendingRename, setPendingRename] = useState<{
     key: string;
@@ -557,7 +577,7 @@ function Shell({
   const [restartToast, setRestartToast] = useState<string | null>(null);
   const [isRestarting, setIsRestarting] = useState(false);
   const [runningChatIds, setRunningChatIds] = useState<Set<string>>(() => new Set());
-  const [completedChatIds, setCompletedChatIds] = useState<Set<string>>(readCompletedRunChatIds);
+  const [updatedChatIds, setUpdatedChatIds] = useState<Set<string>>(readSessionUpdateChatIds);
   const [workspaces, setWorkspaces] = useState<WorkspacesPayload | null>(null);
   const skills = useSkills(token);
   const [settingsSnapshot, setSettingsSnapshot] = useState<SettingsPayload | null>(null);
@@ -625,20 +645,20 @@ function Shell({
   }, [hostSidebarOpen]);
 
   useEffect(() => {
-    writeCompletedRunChatIds(completedChatIds);
-  }, [completedChatIds]);
+    writeSessionUpdateChatIds(updatedChatIds);
+  }, [updatedChatIds]);
 
   const activeSession = useMemo<ChatSummary | null>(() => {
     if (!activeKey) return null;
     return sessions.find((s) => s.key === activeKey) ?? null;
   }, [sessions, activeKey]);
   const runningChatIdList = useMemo(() => Array.from(runningChatIds), [runningChatIds]);
-  const completedChatIdList = useMemo(() => Array.from(completedChatIds), [completedChatIds]);
+  const updatedChatIdList = useMemo(() => Array.from(updatedChatIds), [updatedChatIds]);
   const activeChatId = activeSession?.chatId ?? null;
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
     if (!activeChatId) return;
-    setCompletedChatIds((current) => {
+    setUpdatedChatIds((current) => {
       if (!current.has(activeChatId)) return current;
       const next = new Set(current);
       next.delete(activeChatId);
@@ -678,7 +698,7 @@ function Shell({
   useEffect(() => {
     if (loading) return;
     const knownChatIds = new Set(sessions.map((session) => session.chatId));
-    setCompletedChatIds((current) => {
+    setUpdatedChatIds((current) => {
       const next = new Set(
         Array.from(current).filter((chatId) => knownChatIds.has(chatId)),
       );
@@ -706,12 +726,25 @@ function Shell({
   }, [activeKey, loading, navigate, sessions]);
 
   useEffect(() => {
-    return client.onSessionUpdate((_chatId, _scope, workspaceScope) => {
+    return client.onSessionUpdate((chatId, scope, workspaceScope) => {
+      if (scope === "thread") {
+        setUpdatedChatIds((current) => {
+          const next = new Set(current);
+          if (activeChatIdRef.current === chatId) {
+            next.delete(chatId);
+          } else {
+            next.add(chatId);
+          }
+          return next.size === current.size && next.has(chatId) === current.has(chatId)
+            ? current
+            : next;
+        });
+      }
       if (!workspaceScope) return;
       const next = normalizeWorkspaceScope(workspaceScope);
       setWorkspaceOverrides((current) => ({
         ...current,
-        [_chatId]: next,
+        [chatId]: next,
       }));
       setDraftWorkspaceScope(next);
       setWorkspaceError(null);
@@ -748,7 +781,7 @@ function Shell({
       runningChatIdsRef.current = next;
       return next;
     });
-    setCompletedChatIds((current) => {
+    setUpdatedChatIds((current) => {
       let changed = false;
       const next = new Set(current);
       for (const chatId of activeRunIds) {
@@ -884,6 +917,33 @@ function Shell({
     }
   }, [activeWorkspaceScope, createChat, navigate, t]);
 
+  const onForkChat = useCallback(async (
+    sourceChatId: string,
+    beforeUserIndex: number,
+  ) => {
+    try {
+      const sourceSession = sessions.find((session) => session.chatId === sourceChatId);
+      const sourceTitle = sourceSession
+        ? displayTitle(sourceSession, sidebarState.title_overrides, t("chat.newChat"))
+        : t("chat.newChat");
+      const chatId = await forkChat(
+        sourceChatId,
+        beforeUserIndex,
+        t("chat.forkTitle", { title: sourceTitle }),
+      );
+      navigate({
+        view: "chat",
+        activeKey: `websocket:${chatId}`,
+        settingsSection: "overview",
+      });
+      setMobileSidebarOpen(false);
+      return chatId;
+    } catch (e) {
+      console.error("Failed to fork chat", e);
+      return null;
+    }
+  }, [forkChat, navigate, sessions, sidebarState.title_overrides, t]);
+
   const onNewChat = useCallback(() => {
     navigate(defaultShellRoute());
     setDraftWorkspaceScope(null);
@@ -918,7 +978,7 @@ function Shell({
       const selected = sessions.find((session) => session.key === key);
       const selectedChatId = selected?.chatId;
       if (selectedChatId) {
-        setCompletedChatIds((current) => {
+        setUpdatedChatIds((current) => {
           if (!current.has(selectedChatId)) return current;
           const next = new Set(current);
           next.delete(selectedChatId);
@@ -1126,6 +1186,12 @@ function Shell({
     setMobileSidebarOpen(false);
   }, [activeKey, navigate]);
 
+  const onOpenAutomations = useCallback(() => {
+    setSessionSearchOpen(false);
+    navigate({ view: "automations", activeKey, settingsSection: "automations" });
+    setMobileSidebarOpen(false);
+  }, [activeKey, navigate]);
+
   const onOpenSkills = useCallback(() => {
     setSessionSearchOpen(false);
     navigate({ view: "skills", activeKey, settingsSection: "skills" });
@@ -1183,7 +1249,7 @@ function Shell({
         nextRunning.add(chatId);
         runningChatIdsRef.current = nextRunning;
         setRunningChatIds(nextRunning);
-        setCompletedChatIds((current) => {
+        setUpdatedChatIds((current) => {
           if (!current.has(chatId)) return current;
           const next = new Set(current);
           next.delete(chatId);
@@ -1197,7 +1263,7 @@ function Shell({
       nextRunning.delete(chatId);
       runningChatIdsRef.current = nextRunning;
       setRunningChatIds(nextRunning);
-      setCompletedChatIds((current) => {
+      setUpdatedChatIds((current) => {
         const next = new Set(current);
         if (activeChatIdRef.current === chatId) {
           next.delete(chatId);
@@ -1241,32 +1307,46 @@ function Shell({
   const onConfirmDelete = useCallback(async () => {
     if (!pendingDelete) return;
     const key = pendingDelete.key;
+    const hasAutomations = (pendingDelete.automations?.length ?? 0) > 0;
     const deletingActive = activeKey === key;
     const currentIndex = sessions.findIndex((s) => s.key === key);
     const fallbackKey = deletingActive
       ? (sessions[currentIndex + 1]?.key ?? sessions[currentIndex - 1]?.key ?? null)
       : activeKey;
-    setPendingDelete(null);
-    if (deletingActive) {
-      navigate({
-        view: "chat",
-        activeKey: fallbackKey,
-        settingsSection: "overview",
-      }, { replace: true });
-    }
     try {
-      await deleteChat(key);
-    } catch (e) {
+      const result = await deleteChat(
+        key,
+        hasAutomations ? { deleteAutomations: true } : undefined,
+      );
+      if (result.blocked_by_automations) {
+        setPendingDelete({
+          ...pendingDelete,
+          automations: result.automations ?? [],
+        });
+        return;
+      }
+      setPendingDelete(null);
       if (deletingActive) {
         navigate({
           view: "chat",
-          activeKey: key,
+          activeKey: fallbackKey,
           settingsSection: "overview",
         }, { replace: true });
       }
+    } catch (e) {
       console.error("Failed to delete session", e);
     }
   }, [pendingDelete, deleteChat, activeKey, navigate, sessions]);
+
+  const onRequestDelete = useCallback(async (key: string, label: string) => {
+    let automations: SessionAutomationJob[] = [];
+    try {
+      automations = await getSessionAutomations(key);
+    } catch {
+      // Delete remains protected by the backend block; prefetch only improves the first prompt.
+    }
+    setPendingDelete({ key, label, automations });
+  }, [getSessionAutomations]);
 
   const headerTitle = activeSession
     ? sidebarState.title_overrides[activeSession.key] ||
@@ -1287,6 +1367,12 @@ function Shell({
       });
       return;
     }
+    if (view === "automations") {
+      document.title = t("app.documentTitle.chat", {
+        title: t("settings.nav.automations", { defaultValue: "Automations" }),
+      });
+      return;
+    }
     if (view === "skills") {
       document.title = t("app.documentTitle.chat", {
         title: t("settings.nav.skills", { defaultValue: "Skills" }),
@@ -1304,8 +1390,7 @@ function Shell({
     loading,
     onNewChat,
     onSelect: onSelectChat,
-    onRequestDelete: (key: string, label: string) =>
-      setPendingDelete({ key, label }),
+    onRequestDelete,
     onTogglePin,
     onRequestRename,
     onToggleArchive,
@@ -1314,9 +1399,10 @@ function Shell({
     onNewChatInProject,
     onOpenSettings,
     onOpenApps,
+    onOpenAutomations,
     onOpenSkills,
     onOpenSearch: onOpenSessionSearch,
-    activeUtility: view === "apps" || view === "skills" ? view : null,
+    activeUtility: view === "apps" || view === "automations" || view === "skills" ? view : null,
     onToggleArchived,
     pinnedKeys: sidebarState.pinned_keys,
     archivedKeys: sidebarState.archived_keys,
@@ -1324,7 +1410,7 @@ function Shell({
     projectNameOverrides: sidebarState.project_name_overrides,
     collapsedGroups: sidebarState.collapsed_groups,
     runningChatIds: runningChatIdList,
-    completedChatIds: completedChatIdList,
+    updatedChatIds: updatedChatIdList,
     viewState: sidebarState.view,
     showArchived: sidebarState.view.show_archived,
     archivedCount: sidebarState.archived_keys.length,
@@ -1446,7 +1532,7 @@ function Shell({
                 showCloseButton={false}
                 aria-describedby={undefined}
                 className="p-0 lg:hidden"
-                style={{ width: SIDEBAR_WIDTH, maxWidth: SIDEBAR_WIDTH }}
+                style={{ width: MOBILE_SIDEBAR_WIDTH, maxWidth: MOBILE_SIDEBAR_WIDTH }}
               >
                 <SheetTitle className="sr-only">{t("sidebar.navigation")}</SheetTitle>
                 <Sidebar
@@ -1485,6 +1571,7 @@ function Shell({
                 onToggleSidebar={toggleSidebar}
                 onNewChat={onNewChat}
                 onCreateChat={onCreateChat}
+                onForkChat={onForkChat}
                 onTurnEnd={onTurnEnd}
                 theme={theme}
                 onToggleTheme={toggle}
@@ -1529,6 +1616,7 @@ function Shell({
         <DeleteConfirm
           open={!!pendingDelete}
           title={pendingDelete?.label ?? ""}
+          automations={pendingDelete?.automations}
           onCancel={() => setPendingDelete(null)}
           onConfirm={onConfirmDelete}
         />
@@ -1550,7 +1638,7 @@ function Shell({
         {restartToast ? (
           <div
             role="status"
-            className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-full border border-border/70 bg-popover px-4 py-2 text-sm font-medium text-popover-foreground shadow-lg"
+            className="fixed left-1/2 top-[calc(0.75rem+env(safe-area-inset-top))] z-50 max-w-[calc(100vw-1rem)] -translate-x-1/2 rounded-full border border-border/70 bg-popover px-4 py-2 text-sm font-medium text-popover-foreground shadow-lg"
           >
             {restartToast}
           </div>
