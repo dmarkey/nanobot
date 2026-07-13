@@ -8,6 +8,7 @@ from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
 from nanobot.agent.tools.context import current_request_context
 from nanobot.agent.tools.schema import (
     ArraySchema,
+    BooleanSchema,
     NumberSchema,
     StringSchema,
     tool_parameters_schema,
@@ -38,6 +39,14 @@ if TYPE_CHECKING:
             minimum=0.0,
             maximum=2.0,
         ),
+        detached=BooleanSchema(
+            description=(
+                "Set true for long-running, fire-and-forget work (e.g. a download). "
+                "A detached subagent does NOT hold the current turn open; its result "
+                "is delivered as a new message when it finishes, so you stay responsive. "
+                "Omit/false for quick helpers whose result you want back in this turn."
+            ),
+        ),
         required=["task"],
     )
 )
@@ -63,7 +72,9 @@ class SpawnTool(Tool):
             "The subagent will complete the task and report back when done. "
             "For deliverables or existing projects, inspect the workspace first "
             "and use a dedicated subdirectory when helpful. "
-            "Use the 'tools' parameter to restrict which tools the subagent can use."
+            "Use the 'tools' parameter to restrict which tools the subagent can use. "
+            "For long-running work (e.g. downloads) set 'detached' true so you stay "
+            "responsive and get the result as a new message when it finishes."
         )
 
     async def execute(
@@ -72,6 +83,7 @@ class SpawnTool(Tool):
         label: str | None = None,
         tools: list[str] | None = None,
         temperature: float | None = None,
+        detached: bool = False,
         **kwargs: Any,
     ) -> str:
         """Spawn a subagent to execute the given task."""
@@ -99,5 +111,6 @@ class SpawnTool(Tool):
             tool_filter=tools,
             origin_message_id=request_ctx.message_id,
             temperature=temperature,
+            detached=detached,
             workspace_scope=current_workspace_scope(),
         )

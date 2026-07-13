@@ -52,6 +52,7 @@ class SubagentStatus:
     usage: dict = field(default_factory=dict)          # token usage
     stop_reason: str | None = None
     error: str | None = None
+    detached: bool = False     # fire-and-forget: does not hold the parent turn open
 
 
 class _SubagentHook(AgentHook):
@@ -304,10 +305,16 @@ class SubagentManager:
         origin_message_id: str | None = None,
         temperature: float | None = None,
         workspace_scope: WorkspaceScope | None = None,
+        detached: bool = False,
         *,
         runtime: LLMRuntime | None = None,
     ) -> str:
-        """Spawn a subagent to execute a task in the background."""
+        """Spawn a subagent to execute a task in the background.
+
+        When *detached* is True the subagent runs fire-and-forget: it does not
+        hold the parent's turn open, and its result is delivered as a new turn
+        when it finishes (use for long-running work like downloads).
+        """
         if runtime is None:
             runtime = self._compat_spawn_runtime()
         if temperature is not None:
@@ -321,6 +328,7 @@ class SubagentManager:
             label=display_label,
             task_description=task,
             started_at=time.monotonic(),
+            detached=detached,
         )
         self._task_statuses[task_id] = status
 
@@ -572,4 +580,18 @@ class SubagentManager:
         return sum(
             1 for tid in tids
             if tid in self._running_tasks and not self._running_tasks[tid].done()
+        )
+
+    def get_blocking_count_by_session(self, session_key: str) -> int:
+        """Running subagents for a session that should hold the parent turn open.
+
+        Detached subagents are excluded: they run fire-and-forget, so the parent
+        turn ends promptly and their result arrives as a new turn instead.
+        """
+        tids = self._session_tasks.get(session_key, set())
+        return sum(
+            1 for tid in tids
+            if tid in self._running_tasks
+            and not self._running_tasks[tid].done()
+            and not getattr(self._task_statuses.get(tid), "detached", False)
         )

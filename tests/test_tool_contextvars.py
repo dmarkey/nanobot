@@ -77,6 +77,7 @@ async def test_spawn_tool_keeps_task_local_context() -> None:
             tool_filter=None,
             origin_message_id: str | None = None,
             temperature: float | None = None,
+            detached: bool = False,
             workspace_scope=None,
         ) -> str:
             seen.append((origin_channel, origin_chat_id, session_key))
@@ -209,6 +210,7 @@ async def test_spawn_tool_basic_request_context_and_execute() -> None:
             tool_filter=None,
             origin_message_id=None,
             temperature=None,
+            detached=False,
             workspace_scope=None,
         ):
             seen.append((origin_channel, origin_chat_id, session_key))
@@ -248,6 +250,7 @@ async def test_spawn_tool_rejects_missing_request_runtime() -> None:
             tool_filter=None,
             origin_message_id=None,
             temperature=None,
+            detached=False,
             workspace_scope=None,
         ):
             seen.append((origin_channel, origin_chat_id, session_key))

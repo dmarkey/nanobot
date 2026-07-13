@@ -873,7 +873,7 @@ class AgentLoop:
             # completions are injected in-order rather than dispatched separately.
             if (not items
                     and session is not None
-                    and self.subagents.get_running_count_by_session(session.key) > 0):
+                    and self.subagents.get_blocking_count_by_session(session.key) > 0):
                 try:
                     msg = await asyncio.wait_for(pending_queue.get(), timeout=300)
                 except asyncio.TimeoutError:

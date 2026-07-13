@@ -566,3 +566,41 @@ async def test_subagent_connects_url_mcp_and_skips_stdio(tmp_path, monkeypatch):
     conns = await mgr._connect_subagent_mcp(ToolRegistry(), ["read_file"])
     assert conns == []
     assert seen == {}
+
+
+@pytest.mark.asyncio
+async def test_detached_subagent_excluded_from_blocking_count(tmp_path):
+    """Detached subagents run but do not hold the parent turn (blocking count)."""
+    from nanobot.agent.subagent import SubagentManager
+    from nanobot.bus.queue import MessageBus
+
+    mgr = SubagentManager(
+        workspace=tmp_path, bus=MessageBus(), max_tool_result_chars=_MAX_TOOL_RESULT_CHARS
+    )
+    mgr._announce_result = AsyncMock()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+
+    release = asyncio.Event()
+
+    async def fake_run(spec):
+        await release.wait()
+        return SimpleNamespace(
+            stop_reason="done", final_content="done", error=None, tool_events=[]
+        )
+
+    mgr.runner.run = AsyncMock(side_effect=fake_run)
+
+    key = "cli:c1"
+    await mgr.spawn(task="quick helper", runtime=_runtime(provider), session_key=key)
+    await mgr.spawn(
+        task="long download", runtime=_runtime(provider), session_key=key, detached=True
+    )
+    await asyncio.sleep(0)  # let both tasks reach the blocked runner
+
+    # both are running, but only the non-detached one should hold the parent turn
+    assert mgr.get_running_count_by_session(key) == 2
+    assert mgr.get_blocking_count_by_session(key) == 1
+
+    release.set()
+    await asyncio.gather(*mgr._running_tasks.values(), return_exceptions=True)
