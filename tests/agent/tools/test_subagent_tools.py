@@ -505,3 +505,64 @@ async def test_drain_pending_timeout(tmp_path):
         await hang_task
     except asyncio.CancelledError:
         pass
+
+
+@pytest.mark.asyncio
+async def test_subagent_connects_url_mcp_and_skips_stdio(tmp_path, monkeypatch):
+    """Subagent MCP: connect referenced URL servers; skip stdio (unsafe to duplicate)."""
+    import nanobot.agent.tools.mcp as mcp_mod
+    from nanobot.agent.subagent import SubagentManager
+    from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.bus.queue import MessageBus
+    from nanobot.config.schema import MCPServerConfig
+
+    mgr = SubagentManager(
+        workspace=tmp_path,
+        bus=MessageBus(),
+        max_tool_result_chars=16000,
+        mcp_servers={
+            "media-box": MCPServerConfig(url="http://127.0.0.1:8750/mcp"),
+            "serena": MCPServerConfig(command="serena"),
+        },
+    )
+
+    # transport classification
+    assert mgr._mcp_server_transport(mgr._mcp_servers["media-box"]) == "url"
+    assert mgr._mcp_server_transport(mgr._mcp_servers["serena"]) == "stdio"
+
+    # filter -> referenced server names
+    assert mgr._referenced_mcp_servers(["mcp_media-box_*"]) == ["media-box"]
+    assert set(mgr._referenced_mcp_servers(["mcp_*"])) == {"media-box", "serena"}
+    assert mgr._referenced_mcp_servers(["mcp_media-box_tvmaze_search"]) == ["media-box"]
+    assert mgr._referenced_mcp_servers(["read_file", "grep"]) == []
+    assert mgr._referenced_mcp_servers(None) == []
+
+    # only the URL server is connected; stdio is skipped
+    seen = {}
+
+    class _FakeConn:
+        def __init__(self):
+            self.closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    async def fake_connect(servers, registry, *, deferred=False):
+        seen["servers"] = list(servers)
+        seen["deferred"] = deferred
+        return {name: _FakeConn() for name in servers}
+
+    monkeypatch.setattr(mcp_mod, "connect_mcp_servers", fake_connect)
+
+    conns = await mgr._connect_subagent_mcp(
+        ToolRegistry(), ["mcp_media-box_*", "mcp_serena_*"]
+    )
+    assert seen["servers"] == ["media-box"]  # serena (stdio) skipped
+    assert seen["deferred"] is False
+    assert len(conns) == 1
+
+    # no referenced servers -> no connect call
+    seen.clear()
+    conns = await mgr._connect_subagent_mcp(ToolRegistry(), ["read_file"])
+    assert conns == []
+    assert seen == {}

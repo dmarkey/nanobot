@@ -6,6 +6,7 @@ import time
 import uuid
 import warnings
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Callable
 
@@ -98,6 +99,7 @@ class SubagentManager:
         max_concurrent_subagents: int | None = None,
         fail_on_tool_error: bool | None = None,
         llm_wall_timeout_for_session: Callable[[str | None], float | None] | None = None,
+        mcp_servers: dict[str, Any] | None = None,
     ):
         if workspace is None:
             raise TypeError("SubagentManager.__init__() missing required argument: 'workspace'")
@@ -153,6 +155,7 @@ class SubagentManager:
         )
         self.runner = AgentRunner()
         self._llm_wall_timeout_for_session = llm_wall_timeout_for_session
+        self._mcp_servers = dict(mcp_servers or {})
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_statuses: dict[str, SubagentStatus] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
@@ -221,6 +224,74 @@ class SubagentManager:
         )
         ToolLoader().load(ctx, registry, scope="subagent")
         return registry
+
+    @staticmethod
+    def _mcp_server_transport(cfg: Any) -> str:
+        """Classify an MCP server config as 'stdio', 'url', or 'unknown'."""
+        declared = getattr(cfg, "type", None)
+        if declared == "stdio":
+            return "stdio"
+        if declared in ("sse", "streamableHttp"):
+            return "url"
+        if getattr(cfg, "command", ""):
+            return "stdio"
+        if getattr(cfg, "url", ""):
+            return "url"
+        return "unknown"
+
+    def _referenced_mcp_servers(self, tool_filter: list[str] | None) -> list[str]:
+        """Return MCP server names whose tools the subagent's filter could match."""
+        if not tool_filter or not self._mcp_servers:
+            return []
+        names: list[str] = []
+        for name in self._mcp_servers:
+            prefix = f"mcp_{name}_"
+            if any(
+                p in ("*", "mcp_*") or p.startswith(prefix) or fnmatch(f"{prefix}probe", p)
+                for p in tool_filter
+            ):
+                names.append(name)
+        return names
+
+    async def _connect_subagent_mcp(
+        self, registry: ToolRegistry, tool_filter: list[str] | None
+    ) -> list[Any]:
+        """Connect URL MCP servers referenced by ``tool_filter`` into the registry.
+
+        Only HTTP/SSE (URL) servers are connected — a subagent is just another
+        client to an already-running service, so there is no duplicate instance.
+        stdio servers are skipped: spawning a second process is unsafe for
+        stateful singletons; expose them over HTTP/SSE to use them in subagents.
+        Returns open connection handles for the caller to close in its own task.
+        """
+        referenced = self._referenced_mcp_servers(tool_filter)
+        if not referenced:
+            return []
+        to_connect: dict[str, Any] = {}
+        for name in referenced:
+            cfg = self._mcp_servers[name]
+            transport = self._mcp_server_transport(cfg)
+            if transport == "url":
+                to_connect[name] = cfg
+            elif transport == "stdio":
+                logger.warning(
+                    "Subagent MCP: skipping stdio server '{}' (unsafe to start a second "
+                    "instance; expose it over HTTP/SSE to use it in subagents)",
+                    name,
+                )
+            else:
+                logger.warning(
+                    "Subagent MCP: skipping server '{}' (unknown transport)", name
+                )
+        if not to_connect:
+            return []
+        from nanobot.agent.tools.mcp import connect_mcp_servers
+
+        connected = await connect_mcp_servers(to_connect, registry, deferred=False)
+        logger.info(
+            "Subagent MCP: connected {} for subagent tools", sorted(connected)
+        )
+        return list(connected.values())
 
     async def spawn(
         self,
@@ -302,6 +373,7 @@ class SubagentManager:
             status.phase = payload.get("phase", status.phase)
             status.iteration = payload.get("iteration", status.iteration)
 
+        mcp_conns: list[Any] = []
         try:
             root = workspace_scope.project_path if workspace_scope is not None else self.workspace
             cfg = None
@@ -309,6 +381,7 @@ class SubagentManager:
                 cfg = self._subagent_tools_config()
                 cfg.restrict_to_workspace = workspace_scope.restrict_to_workspace
             tools = self._build_tools(workspace=root, tools_config=cfg)
+            mcp_conns = await self._connect_subagent_mcp(tools, tool_filter)
             if tool_filter:
                 tools.apply_inclusion_filter(tool_filter)
             if self._deferred_loading and tools.deferred_count:
@@ -383,6 +456,13 @@ class SubagentManager:
             status.error = str(e)
             logger.exception("Subagent [{}] failed", task_id)
             await self._announce_result(task_id, label, task, f"Error: {e}", origin, "error", origin_message_id)
+        finally:
+            # Close subagent-owned MCP connections from this task (owner-task cleanup).
+            for conn in mcp_conns:
+                try:
+                    await conn.aclose()
+                except Exception:
+                    logger.debug("Subagent [{}] MCP connection close error", task_id, exc_info=True)
 
     async def _announce_result(
         self,
