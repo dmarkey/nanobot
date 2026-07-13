@@ -1621,7 +1621,11 @@ def _run_gateway(
     foreground port-conflict preflight so callers/tests can opt out.
     """
     from nanobot.agent.tools.message import MessageTool
-    from nanobot.api.webhook import WebhookServer
+    try:
+        from nanobot.api.webhook import WebhookServer
+    except ImportError:
+        console.print("[red]aiohttp is required to run the gateway. Install with: nanobot plugins enable api[/red]")
+        raise typer.Exit(1)
     from nanobot.bus.queue import MessageBus
     from nanobot.bus.runtime_events import RuntimeEventBus
     from nanobot.channels.manager import ChannelManager
