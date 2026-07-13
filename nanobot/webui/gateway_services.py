@@ -26,7 +26,9 @@ class GatewayServices:
     workspaces: WebUIWorkspaceController
     session_manager: Any | None
     cron_service: Any | None
+    local_trigger_store: Any | None
     cron_pending_job_ids: Callable[[str], set[str]] | None
+    local_trigger_pending_ids: Callable[[str], set[str]] | None
 
 
 def build_gateway_services(
@@ -42,7 +44,10 @@ def build_gateway_services(
     runtime_capabilities_overrides: dict[str, Any] | None,
     disabled_skills: set[str] | None = None,
     cron_service: Any | None = None,
+    local_trigger_store: Any | None = None,
     cron_pending_job_ids: Callable[[str], set[str]] | None = None,
+    local_trigger_pending_ids: Callable[[str], set[str]] | None = None,
+    channel_feature_action: Callable[..., Any] | None = None,
     logger: Any = default_logger,
 ) -> GatewayServices:
     tokens = GatewayTokenStore()
@@ -70,7 +75,10 @@ def build_gateway_services(
         skills_workspace_path=workspace_path,
         disabled_skills=disabled_skills,
         cron_service=cron_service,
+        local_trigger_store=local_trigger_store,
         cron_pending_job_ids=cron_pending_job_ids,
+        local_trigger_pending_ids=local_trigger_pending_ids,
+        channel_feature_action=channel_feature_action,
         log=logger,
     )
     return GatewayServices(
@@ -81,5 +89,7 @@ def build_gateway_services(
         workspaces=workspaces,
         session_manager=session_manager,
         cron_service=cron_service,
+        local_trigger_store=local_trigger_store,
         cron_pending_job_ids=cron_pending_job_ids,
+        local_trigger_pending_ids=local_trigger_pending_ids,
     )

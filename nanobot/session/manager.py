@@ -15,6 +15,10 @@ from typing import Any
 from loguru import logger
 
 from nanobot.config.paths import get_legacy_sessions_dir
+from nanobot.runtime_context import (
+    RUNTIME_CONTEXT_HISTORY_META,
+    public_history_message,
+)
 from nanobot.utils.helpers import (
     ensure_dir,
     estimate_message_tokens,
@@ -27,6 +31,8 @@ from nanobot.utils.helpers import (
 from nanobot.utils.subagent_channel_display import scrub_subagent_announce_body
 
 FILE_MAX_MESSAGES = 2000
+MIN_REPLAY_MAX_MESSAGES = 120
+REPLAY_TOKENS_PER_MESSAGE = 100
 _MESSAGE_TIME_PREFIX_RE = re.compile(r"^\[Message Time: [^\]]+\]\n?")
 _LOCAL_IMAGE_BREADCRUMB_RE = re.compile(r"^\[image: (?:/|~)[^\]]+\]\s*$")
 _TOOL_CALL_ECHO_RE = re.compile(r'^\s*(?:generate_image|message)\([^)]*\)\s*$')
@@ -41,6 +47,15 @@ _FORK_VOLATILE_METADATA_KEYS = {
     "title",
     "title_user_edited",
 }
+
+
+def replay_max_messages_for_context(context_window_tokens: int | None) -> int:
+    if not context_window_tokens or context_window_tokens <= 0:
+        return FILE_MAX_MESSAGES
+    return min(
+        FILE_MAX_MESSAGES,
+        max(MIN_REPLAY_MAX_MESSAGES, context_window_tokens // REPLAY_TOKENS_PER_MESSAGE),
+    )
 
 
 def _sanitize_assistant_replay_text(content: str) -> str:
@@ -82,6 +97,7 @@ def _text_preview(content: Any) -> str:
 
 def _message_preview_text(message: dict[str, Any]) -> str:
     """Session list preview text; subagent inject blobs are shortened for display."""
+    message = public_history_message(message)
     content: Any = message.get("content")
     if message.get("injected_event") == "subagent_result" and isinstance(content, str):
         content = scrub_subagent_announce_body(content)
@@ -108,6 +124,12 @@ def _metadata_title(metadata: Any) -> str:
     if metadata.get("title_user_edited") is True:
         return title
     return strip_think(title)
+
+
+@dataclass
+class RetentionResult:
+    dropped: list[dict]
+    already_consolidated_count: int
 
 
 @dataclass
@@ -143,10 +165,11 @@ class Session:
 
     def get_history(
         self,
-        max_messages: int = 120,
+        max_messages: int = FILE_MAX_MESSAGES,
         *,
         max_tokens: int = 0,
         extend_to_user: bool = False,
+        include_runtime_context: bool = True,
     ) -> list[dict[str, Any]]:
         """Return unconsolidated messages for LLM input.
 
@@ -154,7 +177,7 @@ class Session:
         token budget from the tail (``max_tokens``) when provided.
         """
         unconsolidated = self.messages[self.last_consolidated:]
-        max_messages = max_messages if max_messages > 0 else 120
+        max_messages = max_messages if max_messages > 0 else FILE_MAX_MESSAGES
         start_idx = recent_message_start_index(
             unconsolidated,
             max_messages,
@@ -182,6 +205,12 @@ class Session:
         for message in sliced:
             if message.get("_command"):
                 continue
+            has_persisted_runtime_context = isinstance(
+                message.get(RUNTIME_CONTEXT_HISTORY_META),
+                dict,
+            )
+            if not include_runtime_context:
+                message = public_history_message(message)
             content = message.get("content", "")
             role = message.get("role")
             if role == "tool":
@@ -202,7 +231,14 @@ class Session:
                 )
                 content = f"{content}\n{breadcrumbs}" if content else breadcrumbs
             cli_apps = message.get("cli_apps")
-            if role == "user" and isinstance(cli_apps, list) and cli_apps and isinstance(content, str):
+            if (
+                include_runtime_context
+                and not has_persisted_runtime_context
+                and role == "user"
+                and isinstance(cli_apps, list)
+                and cli_apps
+                and isinstance(content, str)
+            ):
                 cli_lines: list[str] = []
                 for item in cli_apps[:8]:
                     if not isinstance(item, dict):
@@ -217,28 +253,6 @@ class Session:
                     )
                 if cli_lines:
                     breadcrumbs = "\n".join(cli_lines)
-                    content = f"{content}\n{breadcrumbs}" if content else breadcrumbs
-            mcp_presets = message.get("mcp_presets")
-            if (
-                role == "user"
-                and isinstance(mcp_presets, list)
-                and mcp_presets
-                and isinstance(content, str)
-            ):
-                mcp_lines: list[str] = []
-                for item in mcp_presets[:8]:
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get("name") or "").strip().lower()
-                    if not name:
-                        continue
-                    transport = str(item.get("transport") or "mcp").strip() or "mcp"
-                    mcp_lines.append(
-                        f"[MCP Preset Attachment: @{name}; tool_prefix=mcp_{name}_; "
-                        f"transport={transport}]"
-                    )
-                if mcp_lines:
-                    breadcrumbs = "\n".join(mcp_lines)
                     content = f"{content}\n{breadcrumbs}" if content else breadcrumbs
             if role == "assistant" and isinstance(content, str) and not content.strip():
                 if not any(key in message for key in ("tool_calls", "reasoning_content", "thinking_blocks")):
@@ -312,22 +326,26 @@ class Session:
         max_messages: int,
         *,
         extend_to_user: bool = False,
-    ) -> tuple[list[dict], int]:
+    ) -> RetentionResult:
         """Keep a legal recent suffix, optionally extending it back to a user turn.
 
-        Returns ``(dropped, already_consolidated_count)`` where *dropped* is
-        the list of removed messages (in original order) and
-        *already_consolidated_count* is how many of those were inside the
-        pre-existing ``last_consolidated`` prefix and therefore do not need
-        raw archiving.
+        Returns a RetentionResult with dropped messages and how many of those
+        were in the already-consolidated prefix. This method mutates
+        self.messages and self.last_consolidated in place.
         """
         if max_messages <= 0:
             dropped = list(self.messages)
             lc = self.last_consolidated
             self.clear()
-            return dropped, min(lc, len(dropped))
+            return RetentionResult(
+                dropped=dropped,
+                already_consolidated_count=min(lc, len(dropped)),
+            )
         if len(self.messages) <= max_messages:
-            return [], 0
+            return RetentionResult(
+                dropped=[],
+                already_consolidated_count=0,
+            )
 
         original = list(self.messages)
         before_lc = self.last_consolidated
@@ -393,7 +411,10 @@ class Session:
         self.messages = retained
         self.last_consolidated = new_lc
         self.updated_at = datetime.now()
-        return dropped, already_consolidated
+        return RetentionResult(
+            dropped=dropped,
+            already_consolidated_count=already_consolidated,
+        )
 
     def enforce_file_cap(
         self,
@@ -404,17 +425,17 @@ class Session:
         if limit <= 0 or len(self.messages) <= limit:
             return
 
-        dropped, already_consolidated = self.retain_recent_legal_suffix(limit)
-        if not dropped:
+        result = self.retain_recent_legal_suffix(limit)
+        if not result.dropped:
             return
 
-        archive_chunk = dropped[already_consolidated:]
+        archive_chunk = result.dropped[result.already_consolidated_count:]
         if archive_chunk and on_archive:
             on_archive(archive_chunk)
         logger.info(
             "Session file cap hit for {}: dropped {}, raw-archived {}, kept {}",
             self.key,
-            len(dropped),
+            len(result.dropped),
             len(archive_chunk),
             len(self.messages),
         )
@@ -759,7 +780,7 @@ class SessionManager:
                     found_target = True
                     break
                 user_index += 1
-            copied.append(deepcopy(message))
+            copied.append(public_history_message(message))
         if user_index == before_user_index:
             found_target = True
         if not found_target:
