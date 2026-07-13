@@ -25,7 +25,13 @@ from nanobot.providers.openai_responses import (
 )
 
 DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
-DEFAULT_ORIGINATOR = "nanobot"
+# The ChatGPT backend maps the abstract GPT-5.6 slug (e.g. gpt-5.6-luna) to a
+# concrete internal engine based on originator + version + plan + rollout cohort.
+# For non-Codex originators, Luna resolves to a non-existent engine and the
+# endpoint returns HTTP 404 (Sol/Terra route fine). Presenting the official
+# Codex CLI identity makes Luna resolve. See openai/codex#31967.
+DEFAULT_ORIGINATOR = "codex_cli_rs"
+DEFAULT_CODEX_CLI_VERSION = "0.144.3"
 
 
 class OpenAICodexProvider(LLMProvider):
@@ -176,7 +182,8 @@ def _build_headers(account_id: str, token: str) -> dict[str, str]:
         "chatgpt-account-id": account_id,
         "OpenAI-Beta": "responses=experimental",
         "originator": DEFAULT_ORIGINATOR,
-        "User-Agent": "nanobot (python)",
+        "version": DEFAULT_CODEX_CLI_VERSION,
+        "User-Agent": f"{DEFAULT_ORIGINATOR}/{DEFAULT_CODEX_CLI_VERSION}",
         "accept": "text/event-stream",
         "content-type": "application/json",
     }
